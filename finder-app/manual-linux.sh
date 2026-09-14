@@ -110,7 +110,7 @@ make CROSS_COMPILE=${CROSS_COMPILE}
 
 #Copy the inder related scripts and executables to the /home directory
 # on the target rootfs
-cp finder.sh finder-test.sh "${OUTDIR}/rootfs/home/"
+cp finder.sh finder-test.sh writer "${OUTDIR}/rootfs/home/"
 mkdir -p "${OUTDIR}/rootfs/home/conf"
 cp conf/assignment.txt conf/username.txt "${OUTDIR}/rootfs/home/conf/"
 
