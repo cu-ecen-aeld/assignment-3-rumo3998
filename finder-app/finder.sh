@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Finder app test script
 # Author: Ruben Moreno
 

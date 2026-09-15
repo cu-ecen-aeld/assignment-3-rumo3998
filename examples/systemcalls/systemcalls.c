@@ -1,4 +1,7 @@
 #include "systemcalls.h"
+#include <errno.h>
+#include <stdlib.h>
+#define _XOPEN_SOURCE
 
 /**
  * @param cmd the command to execute with system()
@@ -9,16 +12,34 @@
 */
 bool do_system(const char *cmd)
 {
+	/*Check that a cmd was passed, return false if not*/
+	if(cmd == NULL){
+		return false; 
+	}
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+	/*Run system()*/
+	int ret; 
+	ret = system(cmd);
 
-    return true;
-}
+	/*check the return for an error or the exit status*/
+	if(ret == -1){
+		/*error with system()*/
+		return false;		
+	}
+
+	/*system() ran, now check if cmd executed successfully*/	
+	if (WIFEXITED(ret)){
+		/*if WIFEXITED is true, then cmd/process terminated normally
+		 * check the return code on the commands*/
+		if(WEXITSTATUS(ret) ==  0){
+			return true;
+		}
+		return false;
+	}
+
+	/*if the cmd/process did not exit normally return false*/
+	return false;
+}	
 
 /**
 * @param count -The numbers of variables passed to the function. The variables are command to execute.
@@ -36,21 +57,26 @@ bool do_system(const char *cmd)
 
 bool do_exec(int count, ...)
 {
+    /*Input validation*/
+    if (count < 1){
+	    return false;    
+    }
+    
+    /*Creates the variable arg list type, that are used with traversal macros*/
     va_list args;
+    /*count, tells the va_start where the args actually begin*/
     va_start(args, count);
     char * command[count+1];
     int i;
     for(i=0; i<count; i++)
     {
+	/*va_arg gets the next arg in the list, given that the type is provided*/
         command[i] = va_arg(args, char *);
     }
+    /*arg vector needs to be NULL terminated*/
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 /*
- * TODO:
  *   Execute a system command by calling fork, execv(),
  *   and wait instead of system (see LSP page 161).
  *   Use the command[0] as the full path to the command to execute
@@ -58,10 +84,46 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+   /*variables to hold ret status from pid and the pid number*/ 
+    int status;
+    pid_t pid;
 
+    /*call fork, and then check if successful*/
+    pid = fork();
+
+    if(pid == -1){
+	    va_end(args);
+	    return false;
+    }
+    else if (pid == 0){
+	 /*This is the child process*/
+	 int execv_ret;
+	 execv_ret = execv(command[0],command);
+
+	 /*if execv returns then the call was unsuccessful*/
+	 if(execv_ret == -1){
+		 exit(EXIT_FAILURE);
+	 }
+    }
+
+    /*Following the return of the cmd, the parent will reap the child process
+     * wait for the PID given by pid, status is the child's info, and 0 means
+     * the wait will be blocking*/
+    if (waitpid(pid,&status,0) == -1){
+	    va_end(args);
+	    return false;    
+    }
+    else if (WIFEXITED(status) == 1){
+	    /*exited normally, now check if cmd did as well*/
+	    if(WEXITSTATUS(status) == 0){
+			    /*clean up va list and then return*/
+			    va_end(args);
+			    return true;	    
+	    }    
+    }
+    
     va_end(args);
-
-    return true;
+    return false;
 }
 
 /**
@@ -71,6 +133,13 @@ bool do_exec(int count, ...)
 */
 bool do_exec_redirect(const char *outputfile, int count, ...)
 {
+
+    /*input validation for *outputfile*/
+    if(outputfile == NULL || count < 1){
+	    return false;
+    }
+
+    /*parse the variable cmd list*/
     va_list args;
     va_start(args, count);
     char * command[count+1];
@@ -80,20 +149,69 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         command[i] = va_arg(args, char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
-
-
+    
 /*
- * TODO
  *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
  *   redirect standard out to a file specified by outputfile.
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    /*now redirect the stdout, fd = 1*/
+    int kidpid;
+    int status;
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    /*check to see if the fd was successfully opened*/ 
+    if (fd == -1){
+	    va_end(args);
+	    return false;
+    }
 
+    /*now that the fd is open fork the process, and redirect stdout*/
+    switch (kidpid = fork()){
+	    case -1:
+		    close(fd);
+		    va_end(args);
+		    return false;
+	    case 0:
+		    if(dup2(fd, 1) == -1){ /*redirect to stdout which is fd = 1*/
+			    va_end(args);
+			    exit(EXIT_FAILURE);
+		    }
+
+		    /*close the original fd, passed in by the user*/
+		    close(fd);
+
+		    /*Run execv()*/
+	   	    int execv_ret;
+	   	    execv_ret = execv(command[0],command);
+	   
+		    /*if execv returns then the call was unsuccessful*/
+		    if(execv_ret == -1){
+			    exit(EXIT_FAILURE);
+	   	    }
+
+	    default:
+		    close(fd);
+    }
+
+    /*Following the return of the cmd, the parent will reap the child process
+     * wait for the PID given by pid, status is the child's info, and 0 means
+     * the wait will be blocking*/
+    if (waitpid(kidpid,&status,0) == -1){
+	    va_end(args);
+	    return false;    
+    }
+    else if (WIFEXITED(status) == 1){
+	    /*exited normally, now check if cmd did as well*/
+	    if(WEXITSTATUS(status) == 0){
+			    /*clean up va list and then return*/
+			    va_end(args);
+			    return true;	    
+	    }    
+    }
+    
     va_end(args);
-
-    return true;
+    return false;
 }
+
+
