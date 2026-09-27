@@ -22,6 +22,9 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <syslog.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <linux/fs.h>
 
 /* ---defines--- */
 

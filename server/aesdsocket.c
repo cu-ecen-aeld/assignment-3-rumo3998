@@ -13,7 +13,11 @@
 #define ERR     (-1)   /*return err code*/
 #define BACKLOG (10)   /*num of allowable pending connections*/
 
-int main(void){
+/* --globals--- */
+volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
+
+/* ---main--- */
+int main(int argc, char *argv[]){
 
 	int rc;                          /*return code, for validation*/
 	struct addrinfo hints;           /*relevant info*/
@@ -22,8 +26,12 @@ int main(void){
 	int listen_fd, conn_fd;          /*file descr. for listen and connect*/
 	int yes = 1;                     /*option value for setsockopt()*/
 	struct sigaction sa;             /*struct that allows finer signal ctrl*/
-	struct sockaddr_in sock_addr;    /*ip4 addr*/
-	char ip4[INET_ADDRSTRLEN];       /*space to hold the ipv4 str*/
+	int daemon_mode = 0;             /*daemon control*/
+	
+	/*parse cli args and check for daemon arg*/
+	if(argc > 1 && strcmp(argv[1], "-d") == 0){
+			daemon_mode = 1;
+	}
 
 	/*create a hint struct to help populate addrinfo*/
 	memset(&hints, 0, sizeof(hints)); /*clear hints */
@@ -87,17 +95,10 @@ int main(void){
 
 	/*arm /register the signals*/
 	sa.sa_handler = signal_handler; /*handler for when the sig is raised*/
-	sigemptyset(&sa.sa_mask);    /*clear set before use*/
-	sa.sa_flags = SA_RESTART;    /*restart syscall if interrupted*/
+	sigemptyset(&sa.sa_mask);       /*clear set before use*/
+	sa.sa_flags = 0;                /*don't restart syscall if interrupted*/
 
-	/*child reaping process*/
-	rc = sigaction(SIGCHLD, &sa, NULL);
-	if(rc == ERR){
-		ERROR_LOG("SIGCHLD registration returned -1");
-		close(listen_fd); /*close fd to prevent leak*/
-		return ERR; /*return -1 on fail*/
-	}
-
+	
 	/*catch interrupt*/
 	rc = sigaction(SIGINT, &sa, NULL);
 	if(rc == ERR){
@@ -114,33 +115,33 @@ int main(void){
 		return ERR; /*return -1 on fail*/
 	}
 
-	/*main accept loop*/
-	while(1){
-		conn_fd = accept(listen_fd, (struct sockaddr *)&sock_addr, INET_ADDRSTRLEN);
+	/*main accept loop, run while global is not set*/
+	while(!exit_code){
+		struct sockaddr_in sock_addr;    /*ip4 addr*/
+		socklen_t addr_size = sizeof(sock_addr);
+		char ip4[INET_ADDRSTRLEN];       /*space to hold the ipv4 str*/
+
+		conn_fd = accept(listen_fd, (struct sockaddr *)&sock_addr,&addr_size);
 		if(conn_fd == ERR){
+			if(errno == EINTR){ 
+				/*stop loop, assume exit_code will stop future loops*/
+				break;
+			}
 			ERROR_LOG("Accept returned -1");
 			continue;
 		}
 
 		/*at this point the conn_fd is est.*/
-		inet_ntop(sock_addr.sin_family, &sock_addr.sin_addr, ip4, INET_ADDRSTRLEN);
-		if(ip4 == NULL){
+		const char * ret = inet_ntop(sock_addr.sin_family, &sock_addr.sin_addr, ip4, sizeof(ip4));
+		if(ret == NULL){
 			ERROR_LOG("NTOP returned -1");
 			close(conn_fd);
 			continue;
 		}
 
-		/*log message for successful connection*/
-		DEBUG_LOG(	if(conn_fd == ERR){
-			ERROR_LOG("Accept returned -1");
-			continue;
-		}
-
-
-
-
-
-	
+		/*fork functionality*/
+		//todo implement fork and data parsing
+		//DEBUG_LOG("Accepted connection from %s", ip4);
 	
 	}
 
@@ -153,20 +154,7 @@ int main(void){
  *
  */
 static void signal_handler(int signo){
-	switch(signo){
-		case SIGCHLD:
-			int saved_errno = errno;
-			while(waitpid(-1, NULL, WNOHANG) > 0);
-			errno = saved_errno;
-			break;
-		case SIGINT:
-			
-
-	
-	
-	
+	if(signo == SIGINT || signo == SIGTERM){
+		exit_code = 1; /*keep handler short, update global*/
 	}
-
-
-
 }
