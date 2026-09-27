@@ -5,12 +5,14 @@
 CC = $(CROSS_COMPILE)gcc
 CFLAGS = -Wall -Werror
 
-#default target is the writer application
-all: aesdsocket 
+#default and all targets for the server application
+
+all: default 
+default: aesdsocket 
 
 aesdsocket: aesdsocket.c
 	@echo "Running aesdsocket.c"
 	$(CC) $(CFLAGS) aesdsocket.c -o aesdsocket
-clean: 
+clean:	
 	@echo "Running clean"
-	rm -f aesdsocket aesdsocket.o *.out
+	rm -f aesdsocket aesdsocket.o 
