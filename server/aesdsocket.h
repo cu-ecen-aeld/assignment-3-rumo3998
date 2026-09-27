@@ -26,8 +26,10 @@
 /* ---defines--- */
 
 /*syslog prints*/
-#define DEBUG_LOG(msg,...) printf("threading: " msg "\n" , ##__VA_ARGS__)
-#define ERROR_LOG(msg,...) printf("threading ERROR: " msg "\n" , ##__VA_ARGS__)
+#define DEBUG_LOG(msg,...) syslog(LOG_DEBUG, "Server [%s:%d] " msg, __func__, \
+		__LINE__, ##__VA_ARGS__)
+#define ERROR_LOG(msg,...) syslog(LOG_ERR, "Server ERR [%s:%d] " msg,  __func__, \
+		__LINE__, ##__VA_ARGS__)
 
 /* ---function prototypes--- */
 
