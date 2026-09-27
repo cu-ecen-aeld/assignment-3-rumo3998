@@ -35,7 +35,7 @@
 		__LINE__, ##__VA_ARGS__)
 
 /* ---function prototypes--- */
-static void signal_handler(int signo);
+void signal_handler(int signo);
 
 
 #endif /*AESDSOCKET_H_*/

@@ -9,9 +9,10 @@
 #include "aesdsocket.h"
 
 /* ---Defines---*/
-#define PORT    "9000" /*stream socket port*/
-#define ERR     (-1)   /*return err code*/
-#define BACKLOG (10)   /*num of allowable pending connections*/
+#define PORT      "9000" /*stream socket port*/
+#define ERR       (-1)   /*return err code*/
+#define BACKLOG   (10)   /*num of allowable pending connections*/
+#define NUM_BYTES (1024) /*num of bytes to store data*/
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
@@ -93,6 +94,44 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+	/*create daemon given that -d was passed in cli as an arg*/
+	if(daemon_mode){
+		pid_t pid;
+
+		/*create new process*/
+		pid = fork();
+		if(pid == ERR){
+			return ERR;
+		}
+		else if(pid != 0){
+			/*this is the parent process*/
+			exit(EXIT_SUCCESS);
+		}
+
+		/*create new session and process group*/
+		if(setsid() == ERR){
+			return ERR;
+		}
+
+		/*set working dir to root*/
+		if(chdir("/") == ERR){
+			return ERR;	
+		}
+
+		/*close all open files*/
+		close(STDIN_FILENO);
+		close(STDOUT_FILENO);
+		close(STDERR_FILENO);
+	
+		/*redirect fd's 0,1,2 to /dev/null*/
+		int dev_null_fd = open("/dev/null",O_RDWR);
+		if(dev_null_fd != ERR){
+			dup2(dev_null_fd, STDIN_FILENO);
+			dup2(dev_null_fd, STDOUT_FILENO);
+			dup2(dev_null_fd, STDERR_FILENO);
+		}
+	}/*end daemon*/
+
 	/*arm /register the signals*/
 	sa.sa_handler = signal_handler; /*handler for when the sig is raised*/
 	sigemptyset(&sa.sa_mask);       /*clear set before use*/
@@ -115,6 +154,15 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+	/*open or create the data file for RW appending*/
+	int data_fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT | O_APPEND,
+		       	0644);
+	if(data_fd == ERR){
+		ERROR_LOG("File returned -1");
+		close(listen_fd); /*close to prevent leak*/
+		return ERR;
+	}
+
 	/*main accept loop, run while global is not set*/
 	while(!exit_code){
 		struct sockaddr_in sock_addr;    /*ip4 addr*/
@@ -132,28 +180,90 @@ int main(int argc, char *argv[]){
 		}
 
 		/*at this point the conn_fd is est.*/
-		const char * ret = inet_ntop(sock_addr.sin_family, &sock_addr.sin_addr, ip4, sizeof(ip4));
+		const char * ret = inet_ntop(sock_addr.sin_family, 
+				&sock_addr.sin_addr, ip4, sizeof(ip4));
 		if(ret == NULL){
 			ERROR_LOG("NTOP returned -1");
 			close(conn_fd);
 			continue;
 		}
 
-		/*fork functionality*/
-		//todo implement fork and data parsing
-		//DEBUG_LOG("Accepted connection from %s", ip4);
+		/*successfully connected, log status*/
+		DEBUG_LOG("Accepted connection from %s", ip4);
+
+		/*setup buffers to receive data*/
+		char data_buf[NUM_BYTES];
+		int packet_done = 0;
+		ssize_t bytes_recvd; /*[-1,SSIZE_MAX] to check for ERR*/
+
+		/*start recv data*/
+		do{
+			bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
+			if(bytes_recvd == ERR){
+				ERROR_LOG("Recv returned -1");
+				break;
+			}
+			
+			/*write chunk of data*/
+			ssize_t bytes_sent = write(data_fd, data_buf, bytes_recvd);
+			if(bytes_sent == ERR){
+				ERROR_LOG("Sent returned -1");
+				break;
+			}
+
+			/*look thru data_buf for new line*/
+			char *newline_found = memchr(data_buf, '\n', bytes_recvd);
+			if(newline_found != NULL){
+				packet_done = 1;
+			}
+		
+		}while(!packet_done && !exit_code); /*end do(){}while;*/
+		
+		/*packet done, newline found, write back*/
+		if(packet_done && !exit_code){
+			fsync(data_fd); /*flush data out to fd*/
+			lseek(data_fd, 0, SEEK_SET); /*reset file pos to origin*/
+
+			ssize_t bytes_read;
+			/*read file NUM_BYTES @ a time*/
+			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+				if(bytes_sent == ERR){
+					ERROR_LOG("Conn sent returned -1");
+					break;
+				}
+			}
+		}
+
+		/*close client and prep for next connection*/
+		close(conn_fd);
+		/*disconnected, log status*/
+		DEBUG_LOG("Closed connection from %s", ip4);
+	}
 	
+	/*Test to see if compile without cross compile*/
+	DEBUG_LOG("Caught signal, exiting");
+
+	/*close fd's*/
+	close(listen_fd);
+	close(data_fd);
+
+	if(remove("/var/tmp/aesdsocketdata") == ERR){
+		ERROR_LOG("File deletion returned -1");	
+	}
+	else{
+		DEBUG_LOG("tmp file deleted");	
 	}
 
-	/*Test to see if compile without cross compile*/
-	printf("Hello\n");
-}
+	/*successful return*/
+	return 0;
+} /*end of main*/
 
 /*
  *signal_handler function
  *
  */
-static void signal_handler(int signo){
+void signal_handler(int signo){
 	if(signo == SIGINT || signo == SIGTERM){
 		exit_code = 1; /*keep handler short, update global*/
 	}
