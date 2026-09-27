@@ -1,0 +1,44 @@
+/*
+ * aesdsocket.h
+ *
+ * Created on: September 26, 2026
+ * Author: Ruben Reyes Moreno
+ */
+
+#ifndef AESDSOCKET_H_
+#define AESDSOCKET_H_
+
+/* ---Include libraries and headers---*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <syslog.h>
+
+/* ---defines--- */
+
+/*syslog prints*/
+#define DEBUG_LOG(msg,...) printf("threading: " msg "\n" , ##__VA_ARGS__)
+#define ERROR_LOG(msg,...) printf("threading ERROR: " msg "\n" , ##__VA_ARGS__)
+
+/* ---function prototypes--- */
+
+
+
+
+
+
+
+
+
+
+#endif /*AESDSOCKET_H_*/
+
