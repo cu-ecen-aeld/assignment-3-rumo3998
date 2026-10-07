@@ -16,6 +16,9 @@
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct thread_s_head list_head;          /*creates instance of wrapper struct*/
+SLIST_INIT(&list_head);                  /*sets head to NULL*/
 
 /* ---main--- */
 int main(int argc, char *argv[]){
@@ -154,14 +157,16 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
-	/*open or create the data file for RW appending*/
-	int data_fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT | O_APPEND,
-		       	0644);
-	if(data_fd == ERR){
-		ERROR_LOG("File returned -1");
-		close(listen_fd); /*close to prevent leak*/
-		return ERR;
+	/*start time_stamp thread*/
+	pthread_t time_tid;     /*thread id for timestamp*/
+	pthread_create(&time_tid, NULL, timestamp_thread, NULL);
+	if(rc != 0){
+		ERROR_LOG("time_thread creation returned an ERROR");
+		close(listen_fd); /*close fd to prevent leak*/
+		return ERR; /*return -1 on fail*/
 	}
+
+	/*
 
 	/*main accept loop, run while global is not set*/
 	while(!exit_code){
@@ -190,6 +195,70 @@ int main(int argc, char *argv[]){
 
 		/*successfully connected, log status*/
 		DEBUG_LOG("Accepted connection from %s", ip4);
+
+		/*close client and prep for next connection*/
+		close(conn_fd);
+		/*disconnected, log status*/
+		DEBUG_LOG("Closed connection from %s", ip4);
+	}
+	
+	/*Test to see if compile without cross compile*/
+	DEBUG_LOG("Caught signal, exiting");
+
+	/*close fd's*/
+	close(listen_fd);
+	close(data_fd);
+
+	if(remove("/var/tmp/aesdsocketdata") == ERR){
+		ERROR_LOG("File deletion returned -1");	
+	}
+	else{
+		DEBUG_LOG("tmp file deleted");	
+	}
+
+	/*successful return*/
+	return 0;
+} /*end of main*/
+
+/*
+ *signal_handler function
+ *
+ */
+void signal_handler(int signo){
+	if(signo == SIGINT || signo == SIGTERM){
+		exit_code = 1; /*keep handler short, update global*/
+	}
+}
+
+/*
+ *connection thread handler function
+ *
+ */
+void *connection_thread(void *arg){
+	//todo
+}
+
+/*
+ *time stamp thread handler function
+ *
+ */
+void *timestamp_thread(void *arg){
+	//todo
+}
+
+
+/*where I will put deleted code*/
+
+/*from main*/
+	/*open or create the data file for RW appending*/
+	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
+		       	0644);
+	if(data_fd == ERR){
+		ERROR_LOG("File returned -1");
+		close(listen_fd); /*close to prevent leak*/
+		return ERR;
+	}
+
 
 		/*setup buffers to receive data*/
 		char data_buf[NUM_BYTES];
@@ -235,36 +304,3 @@ int main(int argc, char *argv[]){
 			}
 		}
 
-		/*close client and prep for next connection*/
-		close(conn_fd);
-		/*disconnected, log status*/
-		DEBUG_LOG("Closed connection from %s", ip4);
-	}
-	
-	/*Test to see if compile without cross compile*/
-	DEBUG_LOG("Caught signal, exiting");
-
-	/*close fd's*/
-	close(listen_fd);
-	close(data_fd);
-
-	if(remove("/var/tmp/aesdsocketdata") == ERR){
-		ERROR_LOG("File deletion returned -1");	
-	}
-	else{
-		DEBUG_LOG("tmp file deleted");	
-	}
-
-	/*successful return*/
-	return 0;
-} /*end of main*/
-
-/*
- *signal_handler function
- *
- */
-void signal_handler(int signo){
-	if(signo == SIGINT || signo == SIGTERM){
-		exit_code = 1; /*keep handler short, update global*/
-	}
-}
