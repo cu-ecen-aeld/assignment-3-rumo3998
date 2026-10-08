@@ -241,6 +241,7 @@ int main(int argc, char *argv[]){
 
 	/*free the linked list*/
 	free_list(&list_head);
+	pthread_cancel(time_tid);
 
 	/*join the time stamp thread*/
 	pthread_join(time_tid, NULL);
@@ -445,6 +446,7 @@ void free_list(void *arg){
 	/*iterate thru the linked list and free each node*/
 	while(!SLIST_EMPTY(head)){
 		node = SLIST_FIRST(head);
+		pthread_cancel(node->tid);
 		pthread_join(node->tid, NULL);
 		SLIST_REMOVE_HEAD(head, thread_node);
 		free(node);
