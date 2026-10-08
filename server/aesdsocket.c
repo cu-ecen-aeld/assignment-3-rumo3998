@@ -139,7 +139,6 @@ int main(int argc, char *argv[]){
 	sa.sa_handler = signal_handler; /*handler for when the sig is raised*/
 	sigemptyset(&sa.sa_mask);       /*clear set before use*/
 	sa.sa_flags = 0;                /*don't restart syscall if interrupted*/
-
 	
 	/*catch interrupt*/
 	rc = sigaction(SIGINT, &sa, NULL);
@@ -166,8 +165,6 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
-	/*
-
 	/*main accept loop, run while global is not set*/
 	while(!exit_code){
 		struct sockaddr_in sock_addr;    /*ip4 addr*/
@@ -192,15 +189,39 @@ int main(int argc, char *argv[]){
 			close(conn_fd);
 			continue;
 		}
-
 		/*successfully connected, log status*/
 		DEBUG_LOG("Accepted connection from %s", ip4);
 
-		/*close client and prep for next connection*/
-		close(conn_fd);
-		/*disconnected, log status*/
-		DEBUG_LOG("Closed connection from %s", ip4);
-	}
+		/*start up thread for new connection socket*/
+		struct thread_s *temp_thread = malloc(sizeof(struct thread_s));
+		if(temp_thread == NULL){
+			ERROR_LOG("connection thread pointer returned NULL");
+			close(conn_fd);
+			continue;
+		}
+
+		/*successfully allocated memory for a struct thread_s, now init
+		 * struct*/
+		temp_thread->is_done = false;
+		temp_thread->conn_fd = conn_fd
+		rc = pthread_create(&temp_thread->tid, NULL, connection_thread, temp_thread); 
+
+		if(rc != 0){
+			ERROR_LOG("Failed to create conn thread");
+			free(temp_thread);
+			close(conn_fd);
+			continue;
+		}
+
+		/*insert thread into linked list*/
+		SLIST_INSERT_HEAD(&list_head, temp_thread, thread_node);
+
+		/*check for completed threads and join / free*/
+
+
+				
+
+	}/*end of connection accept() while*/
 	
 	/*Test to see if compile without cross compile*/
 	DEBUG_LOG("Caught signal, exiting");
@@ -304,3 +325,7 @@ void *timestamp_thread(void *arg){
 			}
 		}
 
+		/*close client and prep for next connection*/
+		close(conn_fd);
+		/*disconnected, log status*/
+		DEBUG_LOG("Closed connection from %s", ip4);

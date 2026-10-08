@@ -54,6 +54,8 @@ SLIST_HEAD(thread_s_head, thread_s);
 void signal_handler(int signo);
 void *connection_thread(void *arg);
 void *timestamp_thread(void *arg);
+void free_list(void *arg);
+void clean_list(void *arg);
 
 #endif /*AESDSOCKET_H_*/
 
