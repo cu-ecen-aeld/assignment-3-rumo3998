@@ -100,6 +100,16 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+	struct timeval timeout;
+	timeout.tv_sec=1;
+	timeout.tv_usec=0;
+
+	if(setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == ERR){
+		ERROR_LOG("setsockopt SO_RCVTIMEO returned -1");
+		close(listen_fd);
+		return ERR;
+	}
+
 	/*create daemon given that -d was passed in cli as an arg*/
 	if(daemon_mode){
 		pid_t pid;
@@ -180,7 +190,7 @@ int main(int argc, char *argv[]){
 				/*stop loop, assume exit_code will stop future loops
 				 * start to clean threads*/
 				clean_list(&list_head);
-				break;
+				continue;
 			}
 			ERROR_LOG("Accept returned -1");
 			continue;
