@@ -30,9 +30,6 @@
 #include <time.h>
 #include <stdbool.h>
 
-/* ---defines--- */
-#define DST_FILE  "/var/tmp/aesdsocketdata"
-
 /*syslog prints*/
 #define DEBUG_LOG(msg,...) syslog(LOG_DEBUG, "Server [%s:%d] " msg, __func__, \
 		__LINE__, ##__VA_ARGS__)

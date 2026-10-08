@@ -13,6 +13,8 @@
 #define ERR       (-1)   /*return err code*/
 #define BACKLOG   (10)   /*num of allowable pending connections*/
 #define NUM_BYTES (1024) /*num of bytes to store data*/
+#define DST_FILE  "/var/tmp/aesdsocketdata"
+
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
@@ -173,8 +175,10 @@ int main(int argc, char *argv[]){
 
 		conn_fd = accept(listen_fd, (struct sockaddr *)&sock_addr,&addr_size);
 		if(conn_fd == ERR){
-			if(errno == EINTR){ 
-				/*stop loop, assume exit_code will stop future loops*/
+			if(errno == EINTR || errno == EAGAIN){ 
+				/*stop loop, assume exit_code will stop future loops
+				 * start to clean threads*/
+				clean_list(&list_head);
 				break;
 			}
 			ERROR_LOG("Accept returned -1");
@@ -217,20 +221,23 @@ int main(int argc, char *argv[]){
 		SLIST_INSERT_HEAD(&list_head, temp_thread, thread_node);
 
 		/*check for completed threads and join / free*/
-
-
-				
+		clean_list(&list_head);				
 
 	}/*end of connection accept() while*/
 	
 	/*Test to see if compile without cross compile*/
 	DEBUG_LOG("Caught signal, exiting");
 
+	/*free the linked list*/
+	free_list(&list_head);
+
+	/*join the time stamp thread*/
+	pthread_join(time_tid, NULL);
+
 	/*close fd's*/
 	close(listen_fd);
-	close(data_fd);
 
-	if(remove("/var/tmp/aesdsocketdata") == ERR){
+	if(remove(DST_FILE) == ERR){
 		ERROR_LOG("File deletion returned -1");	
 	}
 	else{
