@@ -161,7 +161,7 @@ int main(int argc, char *argv[]){
 
 	/*start time_stamp thread*/
 	pthread_t time_tid;     /*thread id for timestamp*/
-	pthread_create(&time_tid, NULL, timestamp_thread, NULL);
+	rc = pthread_create(&time_tid, NULL, timestamp_thread, NULL);
 	if(rc != 0){
 		ERROR_LOG("time_thread creation returned an ERROR");
 		close(listen_fd); /*close fd to prevent leak*/
