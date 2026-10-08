@@ -26,7 +26,7 @@
 #include <fcntl.h>
 #include <linux/fs.h>
 #include <pthread.h>
-#include <sys/queue.h>
+#include "queue.h"
 #include <time.h>
 #include <stdbool.h>
 

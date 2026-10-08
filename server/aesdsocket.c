@@ -14,13 +14,14 @@
 #define BACKLOG   (10)   /*num of allowable pending connections*/
 #define NUM_BYTES (1024) /*num of bytes to store data*/
 #define DST_FILE  "/var/tmp/aesdsocketdata"
-
+#define MS_TO_NS  (1000000)
+#define S_TO_MS   (1000)
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
 pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
-struct thread_s_head list_head;          /*creates instance of wrapper struct*/
-SLIST_INIT(&list_head);                  /*sets head to NULL*/
+struct thread_s_head list_head = 
+SLIST_HEAD_INITIALIZER(list_head);      /*sets head to NULL*/
 
 /* ---main--- */
 int main(int argc, char *argv[]){
@@ -207,7 +208,7 @@ int main(int argc, char *argv[]){
 		/*successfully allocated memory for a struct thread_s, now init
 		 * struct*/
 		temp_thread->is_done = false;
-		temp_thread->conn_fd = conn_fd
+		temp_thread->conn_fd = conn_fd;
 		rc = pthread_create(&temp_thread->tid, NULL, connection_thread, temp_thread); 
 
 		if(rc != 0){
@@ -234,8 +235,9 @@ int main(int argc, char *argv[]){
 	/*join the time stamp thread*/
 	pthread_join(time_tid, NULL);
 
-	/*close fd's*/
+	/*close fd's and destroy mutex for fn access*/
 	close(listen_fd);
+	pthread_mutex_destroy(&file_mutex);
 
 	if(remove(DST_FILE) == ERR){
 		ERROR_LOG("File deletion returned -1");	
@@ -263,7 +265,101 @@ void signal_handler(int signo){
  *
  */
 void *connection_thread(void *arg){
-	//todo
+	
+	/*input validation*/
+	if(arg == NULL){
+		return NULL;	
+	}
+
+	/*type cast the void ptr to a thread struct*/
+	struct thread_s *node = (struct thread_s *)arg;
+
+	/*extract the connection file descriptor*/
+	int conn_fd = node->conn_fd;
+	
+	/*setup buffers to receive data*/
+	char data_buf[NUM_BYTES];
+	int packet_done = 0;
+	ssize_t bytes_recvd; /*[-1,SSIZE_MAX] to check for ERR*/
+
+	/*info used to interact with ipv4 address*/
+	struct sockaddr_in sock_addr;             /*ip4 addr*/
+	socklen_t addr_size = sizeof(sock_addr);  /*len of ip4 addr*/
+	char ip4[INET_ADDRSTRLEN];                /*space to hold the ipv4 str*/
+
+	/*get peer info*/
+	getpeername(conn_fd, (struct sockaddr*)&sock_addr, &addr_size);
+
+	const char * ret = inet_ntop(sock_addr.sin_family, 
+			&sock_addr.sin_addr, ip4, sizeof(ip4));
+	if(ret == NULL){
+		ERROR_LOG("NTOP returned -1");
+		close(conn_fd);
+	}
+
+
+	do{
+		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
+		if(bytes_recvd == ERR){
+			ERROR_LOG("Recv returned -1");
+			break;
+		}
+
+		/*check if client closed the fd*/
+		if(bytes_recvd == 0){
+			break;
+		}
+
+		/*write chunk of data, but first lock mutex*/
+		pthread_mutex_lock(&file_mutex);
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
+				0644);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+		write(data_fd, data_buf, bytes_recvd);
+		close(data_fd);
+
+		/*done writing, unlock mutex*/
+		pthread_mutex_unlock(&file_mutex);
+
+		/*look thru data_buf for new line*/
+		char *newline_found = memchr(data_buf, '\n', bytes_recvd);
+		if(newline_found != NULL){
+			packet_done = 1;
+		}
+		
+	}while(!packet_done && !exit_code); /*end do(){}while;*/
+		
+	/*packet done, newline found, write back*/
+	if(packet_done && !exit_code){
+		pthread_mutex_lock(&file_mutex);
+
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDONLY);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+
+		ssize_t bytes_read;
+		/*read file NUM_BYTES @ a time*/
+		while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+			ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+			if(bytes_sent == ERR){
+				ERROR_LOG("Conn sent returned -1");
+				break;
+			}
+		}
+		pthread_mutex_unlock(&file_mutex);
+	}
+
+	/*close client and prep for next connection*/
+	close(conn_fd);
+	/*disconnected, log status*/
+	DEBUG_LOG("Closed connection from %s", ip4);
+	node->is_done = true;
+	return NULL;
 }
 
 /*
@@ -271,7 +367,53 @@ void *connection_thread(void *arg){
  *
  */
 void *timestamp_thread(void *arg){
-	//todo
+	while(!exit_code){
+		int rc; /*return code*/
+		struct timespec print_delay;
+		print_delay.tv_sec = 10;
+		print_delay.tv_nsec = 0;
+		char time_str[200];
+		time_t t;
+		struct tm *tmp;
+
+		/*wait to obtain the mutex*/
+		do{
+			errno = 0;
+			rc = nanosleep(&print_delay, &print_delay);
+		}while(rc != 0 && errno == EINTR && !exit_code);
+
+		if(exit_code){
+			break;
+		}
+		
+		/*set up timestamp*/
+		time(&t);
+		tmp = localtime(&t);
+		if(tmp == NULL){
+			ERROR_LOG("localtime returned NULL");
+			continue;
+		}
+		size_t len = strftime(time_str, sizeof(time_str), 
+				"timestamp:%a, %d %b %Y %T %z\n", tmp);
+
+
+		/*write chunk of data, but first lock mutex*/
+		pthread_mutex_lock(&file_mutex);
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
+				0644);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+		else{
+			write(data_fd, time_str, len);
+			close(data_fd);
+		}
+
+		/*done writing, unlock mutex*/
+		pthread_mutex_unlock(&file_mutex);
+	}
+	return NULL;
 }
 
 
@@ -280,8 +422,8 @@ void *timestamp_thread(void *arg){
  */
 void free_list(void *arg){
 	/*type cast the arg to a thread_s_head type*/
-	struct thread_s_head * head = (struct thread_s_head *)arg;
-	struct thread_s * node = NULL; /*ptr to a thread_node*/
+	struct thread_s_head *head = (struct thread_s_head *)arg;
+	struct thread_s *node = NULL; /*ptr to a thread_node*/
 
 	/*check to make sure arg is valid*/
 	if(head == NULL){
@@ -291,6 +433,7 @@ void free_list(void *arg){
 	/*iterate thru the linked list and free each node*/
 	while(!SLIST_EMPTY(head)){
 		node = SLIST_FIRST(head);
+		pthread_join(node->tid, NULL);
 		SLIST_REMOVE_HEAD(head, thread_node);
 		free(node);
 		node = NULL;
@@ -300,11 +443,12 @@ void free_list(void *arg){
 /*
  *helper function to clean list
  */
-void clean_thread(void *arg){
+void clean_list(void *arg){
 
 	/*type cast the arg to a thread_s_head type*/
-	struct thread_s_head * head = (struct thread_s_head *)arg;
-	struct thread_s * node, temp_node = NULL; /*ptrs to thread_node*/
+	struct thread_s_head *head = (struct thread_s_head *)arg;
+	struct thread_s *node = NULL;
+	struct thread_s *temp_node = NULL; /*ptrs to thread_node*/
 
 	/*check to make sure arg is valid*/
 	if(head == NULL){
@@ -314,72 +458,12 @@ void clean_thread(void *arg){
 	/*iterate thru the linked list and free each node*/
 	SLIST_FOREACH_SAFE(node, head, thread_node, temp_node){
 		if(node->is_done){
-			SLIST_REMOVE_HEAD(head, thread_node);
+			pthread_join(node->tid, NULL);
+			SLIST_REMOVE(head, node, thread_s, thread_node);
 			free(node);
 			node = NULL;		
 		}
+
 	}
 }
 
-
-/*where I will put deleted code*/
-
-/*from main*/
-	/*open or create the data file for RW appending*/
-	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
-		       	0644);
-	if(data_fd == ERR){
-		ERROR_LOG("File returned -1");
-		close(listen_fd); /*close to prevent leak*/
-		return ERR;
-	}
-
-
-		/*setup buffers to receive data*/
-		char data_buf[NUM_BYTES];
-		int packet_done = 0;
-		ssize_t bytes_recvd; /*[-1,SSIZE_MAX] to check for ERR*/
-
-		/*start recv data*/
-		do{
-			bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
-			if(bytes_recvd == ERR){
-				ERROR_LOG("Recv returned -1");
-				break;
-			}
-			
-			/*write chunk of data*/
-			ssize_t bytes_sent = write(data_fd, data_buf, bytes_recvd);
-			if(bytes_sent == ERR){
-				ERROR_LOG("Sent returned -1");
-				break;
-			}
-
-			/*look thru data_buf for new line*/
-			char *newline_found = memchr(data_buf, '\n', bytes_recvd);
-			if(newline_found != NULL){
-				packet_done = 1;
-			}
-		
-		}while(!packet_done && !exit_code); /*end do(){}while;*/
-		
-		/*packet done, newline found, write back*/
-		if(packet_done && !exit_code){
-			fsync(data_fd); /*flush data out to fd*/
-			lseek(data_fd, 0, SEEK_SET); /*reset file pos to origin*/
-
-			ssize_t bytes_read;
-			/*read file NUM_BYTES @ a time*/
-			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
-				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
-				if(bytes_sent == ERR){
-					ERROR_LOG("Conn sent returned -1");
-					break;
-				}
-			}
-		}
-
-		/*close client and prep for next connection*/
-		close(conn_fd);
-		/*disconnected, log status*/
-		DEBUG_LOG("Closed connection from %s", ip4);
