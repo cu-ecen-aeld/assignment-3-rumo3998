@@ -268,6 +268,53 @@ void *timestamp_thread(void *arg){
 }
 
 
+/*
+ *helper function to free linked list elements
+ */
+void free_list(void *arg){
+	/*type cast the arg to a thread_s_head type*/
+	struct thread_s_head * head = (struct thread_s_head *)arg;
+	struct thread_s * node = NULL; /*ptr to a thread_node*/
+
+	/*check to make sure arg is valid*/
+	if(head == NULL){
+		return;
+	}
+
+	/*iterate thru the linked list and free each node*/
+	while(!SLIST_EMPTY(head)){
+		node = SLIST_FIRST(head);
+		SLIST_REMOVE_HEAD(head, thread_node);
+		free(node);
+		node = NULL;
+	}
+}
+
+/*
+ *helper function to clean list
+ */
+void clean_thread(void *arg){
+
+	/*type cast the arg to a thread_s_head type*/
+	struct thread_s_head * head = (struct thread_s_head *)arg;
+	struct thread_s * node, temp_node = NULL; /*ptrs to thread_node*/
+
+	/*check to make sure arg is valid*/
+	if(head == NULL){
+		return;
+	}
+
+	/*iterate thru the linked list and free each node*/
+	SLIST_FOREACH_SAFE(node, head, thread_node, temp_node){
+		if(node->is_done){
+			SLIST_REMOVE_HEAD(head, thread_node);
+			free(node);
+			node = NULL;		
+		}
+	}
+}
+
+
 /*where I will put deleted code*/
 
 /*from main*/
