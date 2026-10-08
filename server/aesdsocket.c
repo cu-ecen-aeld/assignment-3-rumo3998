@@ -318,8 +318,10 @@ void *connection_thread(void *arg){
 		if(data_fd == ERR){
 			ERROR_LOG("File returned -1");
 		}
-		write(data_fd, data_buf, bytes_recvd);
-		close(data_fd);
+		else{
+			write(data_fd, data_buf, bytes_recvd);
+			close(data_fd);
+		}
 
 		/*done writing, unlock mutex*/
 		pthread_mutex_unlock(&file_mutex);
