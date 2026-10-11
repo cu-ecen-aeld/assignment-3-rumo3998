@@ -13,9 +13,15 @@
 #define ERR       (-1)   /*return err code*/
 #define BACKLOG   (10)   /*num of allowable pending connections*/
 #define NUM_BYTES (1024) /*num of bytes to store data*/
+#define DST_FILE  "/var/tmp/aesdsocketdata"
+#define MS_TO_NS  (1000000)
+#define S_TO_MS   (1000)
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+struct thread_s_head list_head = 
+SLIST_HEAD_INITIALIZER(list_head);      /*sets head to NULL*/
 
 /* ---main--- */
 int main(int argc, char *argv[]){
@@ -94,6 +100,16 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+	struct timeval timeout;
+	timeout.tv_sec=1;
+	timeout.tv_usec=0;
+
+	if(setsockopt(listen_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == ERR){
+		ERROR_LOG("setsockopt SO_RCVTIMEO returned -1");
+		close(listen_fd);
+		return ERR;
+	}
+
 	/*create daemon given that -d was passed in cli as an arg*/
 	if(daemon_mode){
 		pid_t pid;
@@ -136,7 +152,6 @@ int main(int argc, char *argv[]){
 	sa.sa_handler = signal_handler; /*handler for when the sig is raised*/
 	sigemptyset(&sa.sa_mask);       /*clear set before use*/
 	sa.sa_flags = 0;                /*don't restart syscall if interrupted*/
-
 	
 	/*catch interrupt*/
 	rc = sigaction(SIGINT, &sa, NULL);
@@ -154,13 +169,13 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
-	/*open or create the data file for RW appending*/
-	int data_fd = open("/var/tmp/aesdsocketdata", O_RDWR | O_CREAT | O_APPEND,
-		       	0644);
-	if(data_fd == ERR){
-		ERROR_LOG("File returned -1");
-		close(listen_fd); /*close to prevent leak*/
-		return ERR;
+	/*start time_stamp thread*/
+	pthread_t time_tid;     /*thread id for timestamp*/
+	rc = pthread_create(&time_tid, NULL, timestamp_thread, NULL);
+	if(rc != 0){
+		ERROR_LOG("time_thread creation returned an ERROR");
+		close(listen_fd); /*close fd to prevent leak*/
+		return ERR; /*return -1 on fail*/
 	}
 
 	/*main accept loop, run while global is not set*/
@@ -171,9 +186,11 @@ int main(int argc, char *argv[]){
 
 		conn_fd = accept(listen_fd, (struct sockaddr *)&sock_addr,&addr_size);
 		if(conn_fd == ERR){
-			if(errno == EINTR){ 
-				/*stop loop, assume exit_code will stop future loops*/
-				break;
+			if(errno == EINTR || errno == EAGAIN){ 
+				/*stop loop, assume exit_code will stop future loops
+				 * start to clean threads*/
+				clean_list(&list_head);
+				continue;
 			}
 			ERROR_LOG("Accept returned -1");
 			continue;
@@ -187,68 +204,53 @@ int main(int argc, char *argv[]){
 			close(conn_fd);
 			continue;
 		}
-
 		/*successfully connected, log status*/
 		DEBUG_LOG("Accepted connection from %s", ip4);
 
-		/*setup buffers to receive data*/
-		char data_buf[NUM_BYTES];
-		int packet_done = 0;
-		ssize_t bytes_recvd; /*[-1,SSIZE_MAX] to check for ERR*/
-
-		/*start recv data*/
-		do{
-			bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
-			if(bytes_recvd == ERR){
-				ERROR_LOG("Recv returned -1");
-				break;
-			}
-			
-			/*write chunk of data*/
-			ssize_t bytes_sent = write(data_fd, data_buf, bytes_recvd);
-			if(bytes_sent == ERR){
-				ERROR_LOG("Sent returned -1");
-				break;
-			}
-
-			/*look thru data_buf for new line*/
-			char *newline_found = memchr(data_buf, '\n', bytes_recvd);
-			if(newline_found != NULL){
-				packet_done = 1;
-			}
-		
-		}while(!packet_done && !exit_code); /*end do(){}while;*/
-		
-		/*packet done, newline found, write back*/
-		if(packet_done && !exit_code){
-			fsync(data_fd); /*flush data out to fd*/
-			lseek(data_fd, 0, SEEK_SET); /*reset file pos to origin*/
-
-			ssize_t bytes_read;
-			/*read file NUM_BYTES @ a time*/
-			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
-				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
-				if(bytes_sent == ERR){
-					ERROR_LOG("Conn sent returned -1");
-					break;
-				}
-			}
+		/*start up thread for new connection socket*/
+		struct thread_s *temp_thread = malloc(sizeof(struct thread_s));
+		if(temp_thread == NULL){
+			ERROR_LOG("connection thread pointer returned NULL");
+			close(conn_fd);
+			continue;
 		}
 
-		/*close client and prep for next connection*/
-		close(conn_fd);
-		/*disconnected, log status*/
-		DEBUG_LOG("Closed connection from %s", ip4);
-	}
+		/*successfully allocated memory for a struct thread_s, now init
+		 * struct*/
+		temp_thread->is_done = false;
+		temp_thread->conn_fd = conn_fd;
+		rc = pthread_create(&temp_thread->tid, NULL, connection_thread, temp_thread); 
+
+		if(rc != 0){
+			ERROR_LOG("Failed to create conn thread");
+			free(temp_thread);
+			close(conn_fd);
+			continue;
+		}
+
+		/*insert thread into linked list*/
+		SLIST_INSERT_HEAD(&list_head, temp_thread, thread_node);
+
+		/*check for completed threads and join / free*/
+		clean_list(&list_head);				
+
+	}/*end of connection accept() while*/
 	
 	/*Test to see if compile without cross compile*/
 	DEBUG_LOG("Caught signal, exiting");
 
-	/*close fd's*/
-	close(listen_fd);
-	close(data_fd);
+	/*free the linked list*/
+	free_list(&list_head);
+	pthread_cancel(time_tid);
 
-	if(remove("/var/tmp/aesdsocketdata") == ERR){
+	/*join the time stamp thread*/
+	pthread_join(time_tid, NULL);
+
+	/*close fd's and destroy mutex for fn access*/
+	close(listen_fd);
+	pthread_mutex_destroy(&file_mutex);
+
+	if(remove(DST_FILE) == ERR){
 		ERROR_LOG("File deletion returned -1");	
 	}
 	else{
@@ -268,3 +270,214 @@ void signal_handler(int signo){
 		exit_code = 1; /*keep handler short, update global*/
 	}
 }
+
+/*
+ *connection thread handler function
+ *
+ */
+void *connection_thread(void *arg){
+	
+	/*input validation*/
+	if(arg == NULL){
+		return NULL;	
+	}
+
+	/*type cast the void ptr to a thread struct*/
+	struct thread_s *node = (struct thread_s *)arg;
+
+	/*extract the connection file descriptor*/
+	int conn_fd = node->conn_fd;
+	
+	/*setup buffers to receive data*/
+	char data_buf[NUM_BYTES];
+	int packet_done = 0;
+	ssize_t bytes_recvd; /*[-1,SSIZE_MAX] to check for ERR*/
+
+	/*info used to interact with ipv4 address*/
+	struct sockaddr_in sock_addr;             /*ip4 addr*/
+	socklen_t addr_size = sizeof(sock_addr);  /*len of ip4 addr*/
+	char ip4[INET_ADDRSTRLEN];                /*space to hold the ipv4 str*/
+
+	/*get peer info*/
+	getpeername(conn_fd, (struct sockaddr*)&sock_addr, &addr_size);
+
+	const char * ret = inet_ntop(sock_addr.sin_family, 
+			&sock_addr.sin_addr, ip4, sizeof(ip4));
+	if(ret == NULL){
+		ERROR_LOG("NTOP returned -1");
+		close(conn_fd);
+	}
+
+
+	do{
+		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
+		if(bytes_recvd == ERR){
+			ERROR_LOG("Recv returned -1");
+			break;
+		}
+
+		/*check if client closed the fd*/
+		if(bytes_recvd == 0){
+			break;
+		}
+
+		/*write chunk of data, but first lock mutex*/
+		pthread_mutex_lock(&file_mutex);
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
+				0644);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+		else{
+			write(data_fd, data_buf, bytes_recvd);
+			close(data_fd);
+		}
+
+		/*done writing, unlock mutex*/
+		pthread_mutex_unlock(&file_mutex);
+
+		/*look thru data_buf for new line*/
+		char *newline_found = memchr(data_buf, '\n', bytes_recvd);
+		if(newline_found != NULL){
+			packet_done = 1;
+		}
+		
+	}while(!packet_done && !exit_code); /*end do(){}while;*/
+		
+	/*packet done, newline found, write back*/
+	if(packet_done && !exit_code){
+		pthread_mutex_lock(&file_mutex);
+
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDONLY);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+
+		ssize_t bytes_read;
+		/*read file NUM_BYTES @ a time*/
+		while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+			ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+			if(bytes_sent == ERR){
+				ERROR_LOG("Conn sent returned -1");
+				break;
+			}
+		}
+		pthread_mutex_unlock(&file_mutex);
+	}
+
+	/*close client and prep for next connection*/
+	close(conn_fd);
+	/*disconnected, log status*/
+	DEBUG_LOG("Closed connection from %s", ip4);
+	node->is_done = true;
+	return NULL;
+}
+
+/*
+ *time stamp thread handler function
+ *
+ */
+void *timestamp_thread(void *arg){
+	while(!exit_code){
+		int rc; /*return code*/
+		struct timespec print_delay;
+		print_delay.tv_sec = 10;
+		print_delay.tv_nsec = 0;
+		char time_str[200];
+		time_t t;
+		struct tm *tmp;
+
+		/*wait to obtain the mutex*/
+		do{
+			errno = 0;
+			rc = nanosleep(&print_delay, &print_delay);
+		}while(rc != 0 && errno == EINTR && !exit_code);
+
+		if(exit_code){
+			break;
+		}
+		
+		/*set up timestamp*/
+		time(&t);
+		tmp = localtime(&t);
+		if(tmp == NULL){
+			ERROR_LOG("localtime returned NULL");
+			continue;
+		}
+		size_t len = strftime(time_str, sizeof(time_str), 
+				"timestamp:%a, %d %b %Y %T %z\n", tmp);
+
+
+		/*write chunk of data, but first lock mutex*/
+		pthread_mutex_lock(&file_mutex);
+		/*open or create the data file for RW appending*/
+		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
+				0644);
+		if(data_fd == ERR){
+			ERROR_LOG("File returned -1");
+		}
+		else{
+			write(data_fd, time_str, len);
+			close(data_fd);
+		}
+
+		/*done writing, unlock mutex*/
+		pthread_mutex_unlock(&file_mutex);
+	}
+	return NULL;
+}
+
+
+/*
+ *helper function to free linked list elements
+ */
+void free_list(void *arg){
+	/*type cast the arg to a thread_s_head type*/
+	struct thread_s_head *head = (struct thread_s_head *)arg;
+	struct thread_s *node = NULL; /*ptr to a thread_node*/
+
+	/*check to make sure arg is valid*/
+	if(head == NULL){
+		return;
+	}
+
+	/*iterate thru the linked list and free each node*/
+	while(!SLIST_EMPTY(head)){
+		node = SLIST_FIRST(head);
+		pthread_cancel(node->tid);
+		pthread_join(node->tid, NULL);
+		SLIST_REMOVE_HEAD(head, thread_node);
+		free(node);
+		node = NULL;
+	}
+}
+
+/*
+ *helper function to clean list
+ */
+void clean_list(void *arg){
+
+	/*type cast the arg to a thread_s_head type*/
+	struct thread_s_head *head = (struct thread_s_head *)arg;
+	struct thread_s *node = NULL;
+	struct thread_s *temp_node = NULL; /*ptrs to thread_node*/
+
+	/*check to make sure arg is valid*/
+	if(head == NULL){
+		return;
+	}
+
+	/*iterate thru the linked list and free each node*/
+	SLIST_FOREACH_SAFE(node, head, thread_node, temp_node){
+		if(node->is_done){
+			pthread_join(node->tid, NULL);
+			SLIST_REMOVE(head, node, thread_s, thread_node);
+			free(node);
+			node = NULL;		
+		}
+
+	}
+}
+
