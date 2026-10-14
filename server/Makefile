@@ -4,22 +4,17 @@
 #if CROSS_COMPILE is not used then the expression expands to gcc only
 CC ?= $(CROSS_COMPILE)gcc
 CFLAGS ?= -Wall -Werror -I.
+LDFLAGS ?= -lpthread -lrt
 
 #default and all targets for the server application
-TARGET = aesdsocket
+TARGET ?= aesdsocket
 
 all: $(TARGET) 
-default: $(TARGET) 
 
-$(TARGET): aesdsocket.c
+$(TARGET): aesdsocket.c aesdsocket.h
 	@echo "Running compilation with $(CC)..."
-	$(CC) $(CFLAGS) $^ -o $@
-
-#potential issue
-#$(TARGET): aesdsocket.c aesdsocket.h
-#	@echo "Running aesdsocket.c"
-#	$(CC) $(CFLAGS) aesdsocket.c -o aesdsocket
+	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 clean:	
 	@echo "Running clean"
-	rm -f aesdsocket aesdsocket.o 
+	rm -f $(TARGET) *.o 
