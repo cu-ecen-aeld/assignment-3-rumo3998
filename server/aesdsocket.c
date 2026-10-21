@@ -13,9 +13,15 @@
 #define ERR       (-1)   /*return err code*/
 #define BACKLOG   (10)   /*num of allowable pending connections*/
 #define NUM_BYTES (1024) /*num of bytes to store data*/
-#define DST_FILE  "/var/tmp/aesdsocketdata"
 #define MS_TO_NS  (1000000)
 #define S_TO_MS   (1000)
+
+/* ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE
+#    define DST_FILE "/var/tmp/aesdsocketdata"
+#else
+#    define DST_FILE "/dev/aesdchar"
+#endif
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
@@ -169,6 +175,8 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+/* ---build switch to disable timer thread--- */	
+#ifndef USE_AESD_CHAR_DEVICE
 	/*start time_stamp thread*/
 	pthread_t time_tid;     /*thread id for timestamp*/
 	rc = pthread_create(&time_tid, NULL, timestamp_thread, NULL);
@@ -177,6 +185,7 @@ int main(int argc, char *argv[]){
 		close(listen_fd); /*close fd to prevent leak*/
 		return ERR; /*return -1 on fail*/
 	}
+#endif
 
 	/*main accept loop, run while global is not set*/
 	while(!exit_code){
@@ -241,21 +250,27 @@ int main(int argc, char *argv[]){
 
 	/*free the linked list*/
 	free_list(&list_head);
+
+/*  ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE	
 	pthread_cancel(time_tid);
 
 	/*join the time stamp thread*/
 	pthread_join(time_tid, NULL);
-
+#endif
 	/*close fd's and destroy mutex for fn access*/
 	close(listen_fd);
 	pthread_mutex_destroy(&file_mutex);
 
+/*  ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE 
 	if(remove(DST_FILE) == ERR){
 		ERROR_LOG("File deletion returned -1");	
 	}
 	else{
 		DEBUG_LOG("tmp file deleted");	
 	}
+#endif
 
 	/*successful return*/
 	return 0;
