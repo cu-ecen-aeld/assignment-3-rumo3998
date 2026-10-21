@@ -274,8 +274,6 @@ static int aesd_setup_cdev(struct aesd_dev *dev)
     return err;
 }
 
-
-
 int aesd_init_module(void)
 {
     dev_t dev = 0;
@@ -290,8 +288,12 @@ int aesd_init_module(void)
     memset(&aesd_device,0,sizeof(struct aesd_dev));
 
     /**
-     * TODO: initialize the AESD specific portion of the device
+     * initialize the AESD specific portion of the device
      */
+    aesd_circular_buffer_init(&aesd_device.cb);
+    mutex_init(&aesd_device.lock);
+    aesd_device.partial_write = NULL;
+    aesd_device.partial_write_len = 0;
 
     result = aesd_setup_cdev(&aesd_device);
 
