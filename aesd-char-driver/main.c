@@ -21,6 +21,7 @@
 #include "aesdchar.h"
 #include <linux/slab.h>    /*kmalloc(), kfree()*/
 #include <linux/uaccess.h> /*copy to and from usr space*/
+#include <linux/string.h>  /*used for memcpy*/
 
 /*Numerical ID to link files with specific device / driver*/
 int aesd_major =   0; // use dynamic major
@@ -108,7 +109,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
 
     /*try to find the matching char_offset*/
-    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->cb, *f_pos,
+    entry = aesd_circular_buffer_find_entry_offset(&dev->cb, *f_pos,
 		    &char_offset);
     
     /*check if the char_offset was found and if corresponding entry was returned*/
@@ -137,14 +138,116 @@ out:
     return retval;
 }
 
+/*
+ * @brief Performs the device driver write operation.
+ *
+ * @param filp pointer to a file struct.
+ * @param char __user *, app allocated buffer
+ * @param size_t count, size / num bytes of datat to be transferred
+ * @param long offset type pointer for file position that the user is accessing. 
+ * @return num of bytes written on success, negative on fail, check errno code
+ */
 ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-    ssize_t retval = -ENOMEM;
+    /*declare and init vars to assist with cb write*/
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry entry;  /*current entry*/
+    char * buffptr = NULL;           /*per the aesd_cb_add_entry funct we must manage mem allocation*/
+    char * temp_ptr = NULL;          /*pointer used to hold string for modification*/
+    size_t char_offset;              /*val set when matching char_off is found*/
+    size_t size = count;             /*size of data to be written, init to count*/
+    bool newline_term = false;       /*flag for if str is newline terminated*/
+    ssize_t retval = -ENOMEM;        /*Err code for when kmalloc fails due to low mem*/
+
+    /*debug for write function*/
     PDEBUG("write %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle write
-     */
+    
+    /*Acquire lock, interruptible variation*/
+    if(mutex_lock_interruptible(&dev->lock)){
+	    return -ERESTARTSYS;  /*return err code on fail*/
+    }
+
+    /*malloc tmp_ptr*/
+    temp_ptr = kmalloc(count, GFP_KERNEL);  /*sizeof(char) not needed, its 1 byte*/
+    if(!temp_ptr){
+	    goto out;    
+    }
+    memset(temp_ptr, 0, count);
+
+    /*copy data from  userspace buffer into the temp ptr*/
+    if(copy_from_user(temp_ptr, buf, count)){
+	    retval = -EFAULT;
+	    goto out;
+    }
+
+    /*successfully received count bytes from userspace*/
+    retval = count;
+
+    /*Writes will only occur on newline termination*/
+    if(dev->partial_write == NULL && dev->partial_write_len == 0){
+	    /*since no existing line to append to, simply assign tmp_ptr to buffptr*/
+	    buffptr = temp_ptr; /*no need to apppend data*/
+	    temp_ptr = NULL;    
+    }else{
+	    /*realloc and zero out new mem*/
+	    size = count + dev->partial_write_len; 
+	    buffptr = kmalloc(size, GFP_KERNEL);
+	    if(!buffptr){
+		    goto out;	    
+	    }
+	    memset(buffptr, 0, size);
+	    
+	    /*combine the two buffers into one*/
+	    memcpy(buffptr, dev->partial_write, dev->partial_write_len);
+	    memcpy(buffptr + dev->partial_write_len, temp_ptr, count);
+
+	    /*free the temp_ptr since the data has been copied over*/
+	    kfree(temp_ptr);
+	    temp_ptr = NULL;
+    }
+
+    /*now check for the newline to determine whether to add entry into cb or update
+     * the partial write in the aesd char struct*/
+    char * result = memchr(buffptr, '\n', size);
+    if(result != NULL){
+	    newline_term = true;	        
+    }
+
+    /*now check whether to update the aesd struct partial write or write an entry to cb*/
+    if(newline_term){
+
+	    /*check if cb is full, if so free mem of current write ptr*/
+	    if(dev->cb.full){
+		    /*free curr write ptr*/
+		    kfree(dev->cb.entry[dev->cb.in_offs].buffptr);
+	    }
+	    
+	    /*populate entry and then add to cb*/
+	    entry.buffptr = buffptr;
+	    entry.size = size;
+	    aesd_circular_buffer_add_entry(&dev->cb, &entry);
+
+	    /*reset partial_write and len*/
+	    kfree(dev->partial_write);
+	    dev->partial_write = NULL;
+	    dev->partial_write_len = 0;
+    }
+    else{
+	    /*newline not found*/
+	    kfree(dev->partial_write);
+	    dev->partial_write = buffptr;
+	    dev->partial_write_len = size;
+    }
+
+out:
+    /* If an error happened before temp_ptr was cleared, this catches it. */
+    /* If everything succeeded, temp_ptr is NULL, making this safe. */
+    if (temp_ptr) {
+        kfree(temp_ptr);
+    }
+    /*free lock*/
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
