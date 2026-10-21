@@ -109,7 +109,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     }
 
     /*try to find the matching char_offset*/
-    entry = aesd_circular_buffer_find_entry_offset(&dev->cb, *f_pos,
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->cb, *f_pos,
 		    &char_offset);
     
     /*check if the char_offset was found and if corresponding entry was returned*/
