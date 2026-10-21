@@ -48,7 +48,7 @@ int aesd_open(struct inode *inode, struct file *filp)
     /*This performs the bitwise operation to take a pointer struct
      * of type inode and dereference it's cdev structure to arrive at the 
      * start of the aesd struct*/
-    dev = container_of(inode->i_cdev, aesd_dev, cdev);
+    dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
 
     /*assign the aesd_dev ptr to the private data member of the filp for easy
      * access*/
