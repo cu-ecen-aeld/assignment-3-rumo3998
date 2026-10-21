@@ -83,7 +83,7 @@ int aesd_release(struct inode *inode, struct file *filp)
 /*
  * @brief Performs the device driver read operation.
  *
- * @param inode pointer to a inode struct rep.
+ * @param filp pointer to a file struct.
  * @param char __user *, app allocated buffer
  * @param size_t count, size / num bytes of datat to be transferred
  * @param long offset type pointer for file position that the user is accessing. 
@@ -92,12 +92,48 @@ int aesd_release(struct inode *inode, struct file *filp)
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-    /**/
-    ssize_t retval = 0;
+    /*declare and init vars to assist with cb read*/
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry;           /*current entry*/
+    size_t char_offset;                        /*val set when matching char_off is found*/
+    ssize_t retval = 0;                        /*return code for functions*/
+
+    /*print debug for num bytes to read with offset*/
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
-    /**
-     * TODO: handle read
-     */
+    
+
+    /*Acquire lock, interruptible variation*/
+    if(mutex_lock_interruptible(&dev->lock)){
+	    return -ERESTARTSYS;  /*return err code on fail*/
+    }
+
+    /*try to find the matching char_offset*/
+    entry = aesd_circular_buffer_find_entry_offset_for_fpos(&dev->cb, *f_pos,
+		    &char_offset);
+    
+    /*check if the char_offset was found and if corresponding entry was returned*/
+    if(entry == NULL){
+	retval = 0; /*not found and nothing to return*/
+    	goto out;
+    }
+
+    /*if offset found, read only up to the end of the entry*/
+    if(count > entry->size - char_offset){
+	    count = entry->size - char_offset;    
+    }
+
+    /*copy data read into userspace buffer*/
+    if(copy_to_user(buf, entry->buffptr + char_offset, count)){
+	    retval = -EFAULT;
+	    goto out;
+    }
+
+    /*update fpos*/
+    *f_pos += count;
+    retval = count;
+
+out:
+    mutex_unlock(&dev->lock);
     return retval;
 }
 
