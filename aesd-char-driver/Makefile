@@ -20,6 +20,8 @@ else
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 PWD       := $(shell pwd)
 
+all: modules
+
 modules:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
 
