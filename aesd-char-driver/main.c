@@ -18,20 +18,42 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+
+/*Numerical ID to link files with specific device / driver*/
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
-MODULE_AUTHOR("Your Name Here"); /** TODO: fill in your name **/
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_AUTHOR("Ruben Moreno"); /** Updated with author name **/
+MODULE_LICENSE("Dual BSD/GPL"); 
 
+/*global aesd_device*/
 struct aesd_dev aesd_device;
 
+/*
+ * @brief This driver 
+ *
+ * @param
+ * @param
+ *
+ * @return 
+ */
 int aesd_open(struct inode *inode, struct file *filp)
 {
+    /*device structure that contains meta data*/
+    struct aesd_dev *dev;
+
+    /*debug print, enabled in aesdchar.h*/
     PDEBUG("open");
-    /**
-     * TODO: handle open
-     */
+    
+    /*This performs the bitwise operation to take a pointer struct
+     * of type inode and dereference it's cdev structure to arrive at the 
+     * start of the aesd struct*/
+    dev = container_of(inode->i_cdev, aesd_dev, cdev);
+
+    /*assign the aesd_dev ptr to the private data member of the filp for easy
+     * access*/
+    filp->private_data = dev; 
+
     return 0;
 }
 
