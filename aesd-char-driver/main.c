@@ -321,14 +321,9 @@ void aesd_cleanup_module(void){
 	    kfree(entry->buffptr);    
     }
 
-   if(&aesd_device.partial_write != NULL){
-	   kfree(&aesd_device.partial_write);   
-   }
-
+    kfree(aesd_device.partial_write);   
     unregister_chrdev_region(devno, 1);
 }
-
-
 
 module_init(aesd_init_module);
 module_exit(aesd_cleanup_module);
