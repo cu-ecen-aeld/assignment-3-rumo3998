@@ -11,13 +11,16 @@
  *
  */
 
+/* ---includes for libs and headers--- */
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/printk.h>
 #include <linux/types.h>
 #include <linux/cdev.h>
-#include <linux/fs.h> // file_operations
+#include <linux/fs.h>      /*file_operations*/
 #include "aesdchar.h"
+#include <linux/slab.h>    /*kmalloc(), kfree()*/
+#include <linux/uaccess.h> /*copy to and from usr space*/
 
 /*Numerical ID to link files with specific device / driver*/
 int aesd_major =   0; // use dynamic major
@@ -30,12 +33,14 @@ MODULE_LICENSE("Dual BSD/GPL");
 struct aesd_dev aesd_device;
 
 /*
- * @brief This driver 
+ * @brief 1st file operation performed on a dev file. Init in prep for future ops
+ *        opens the char dev and inits the file session. 
  *
- * @param
- * @param
- *
- * @return 
+ * @param inode pointer to a inode struct rep. the device file. Desired info is
+ *        contained in the i_cdev field.
+ * @param filp pointer to the specific open fd session. Will be used to store the
+ *        aesd_dev pointer for easier access in the future *
+ * @return 0 on success
  */
 int aesd_open(struct inode *inode, struct file *filp)
 {
@@ -45,7 +50,7 @@ int aesd_open(struct inode *inode, struct file *filp)
     /*debug print, enabled in aesdchar.h*/
     PDEBUG("open");
     
-    /*This performs the bitwise operation to take a pointer struct
+    /*This performs the pointer arithmetic operations to take a pointer struct
      * of type inode and dereference it's cdev structure to arrive at the 
      * start of the aesd struct*/
     dev = container_of(inode->i_cdev, struct aesd_dev, cdev);
@@ -57,18 +62,37 @@ int aesd_open(struct inode *inode, struct file *filp)
     return 0;
 }
 
+/*
+ * @brief Performs the reverse of open.
+ *
+ * @param inode pointer to a inode struct rep.
+ * @param filp pointer to the specific open fd session. 
+ * @return 0 on success
+ */
 int aesd_release(struct inode *inode, struct file *filp)
 {
+    /*print debug for release function*/
     PDEBUG("release");
     /**
-     * TODO: handle release
+     * Nothing to deallocate since aesd does not have hw to shutdown.
      */
     return 0;
 }
 
+
+/*
+ * @brief Performs the device driver read operation.
+ *
+ * @param inode pointer to a inode struct rep.
+ * @param char __user *, app allocated buffer
+ * @param size_t count, size / num bytes of datat to be transferred
+ * @param long offset type pointer for file position that the user is accessing. 
+ * @return num of bytes read on success, negative on fail, check errno code
+ */
 ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
+    /**/
     ssize_t retval = 0;
     PDEBUG("read %zu bytes with offset %lld",count,*f_pos);
     /**
@@ -87,6 +111,8 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      */
     return retval;
 }
+
+/*aesd device driver, device methods*/
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
