@@ -304,15 +304,26 @@ int aesd_init_module(void)
 
 }
 
-void aesd_cleanup_module(void)
-{
+void aesd_cleanup_module(void){
+    /*variables for loop to iterate over each member of the cb*/
+    uint8_t idx;
+    //struct aesd_circular_buffer buffer, this is found thru &aesd_device.cb
+    struct aesd_buffer_entry *entry;
+
     dev_t devno = MKDEV(aesd_major, aesd_minor);
 
     cdev_del(&aesd_device.cdev);
 
     /**
-     * TODO: cleanup AESD specific poritions here as necessary
+     * cleanup AESD specific poritions here as necessary
      */
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &aesd_device.cb, idx){
+	    kfree(entry->buffptr);    
+    }
+
+   if(&aesd_device.partial_write != NULL){
+	   kfree(&aesd_device.partial_write);   
+   }
 
     unregister_chrdev_region(devno, 1);
 }
