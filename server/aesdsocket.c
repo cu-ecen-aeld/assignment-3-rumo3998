@@ -335,22 +335,17 @@ void *connection_thread(void *arg){
 	}
 
 #ifndef USE_AESD_CHAR_DEVICE
-	/*write chunk of data, but first lock mutex*/
+	/* Regular file needs persistence for tracking positions */
 	pthread_mutex_lock(&file_mutex);
-	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,0644);
-
-	/*done writing, unlock mutex*/
+	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
 	pthread_mutex_unlock(&file_mutex);
-#else
-	int data_fd = open(DST_FILE, O_RDWR);
-#endif
-
 	if(data_fd == ERR){
 		ERROR_LOG("Failed to open destination path");
 		close(conn_fd);
 		node->is_done = true;
 		return NULL;	
 	}
+#endif
 
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
@@ -364,16 +359,26 @@ void *connection_thread(void *arg){
 			break;
 		}
 
-
-#ifndef USE_AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
+		/* LAZY OPEN FOR CHAR DEVICE: Open for this single block write transaction only */
+		int data_fd = open(DST_FILE, O_WRONLY | O_APPEND);
+		if(data_fd == ERR){
+			ERROR_LOG("Failed to open char device for writing");
+			break;
+		}
+#else
 		pthread_mutex_lock(&file_mutex);
 #endif
 
 		write(data_fd, data_buf, bytes_recvd);
 
-#ifndef USE_AESD_CHAR_DEVICE
+#ifdef USE_AESD_CHAR_DEVICE
+		/* IMMEDIATELY CLOSE: Free the handle so driver updates internal states cleanly */
+		close(data_fd);
+#else
 		pthread_mutex_unlock(&file_mutex);
 #endif
+
 		/*look thru data_buf for new line*/
 		char *newline_found = memchr(data_buf, '\n', bytes_recvd);
 		if(newline_found != NULL){
@@ -385,13 +390,11 @@ void *connection_thread(void *arg){
 	/*packet done, newline found, write back*/
 	if(packet_done && !exit_code){
 		
-		
 #ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_lock(&file_mutex);
 		lseek(data_fd, 0, SEEK_SET);
 #else
-		close(data_fd);
-		data_fd = open(DST_FILE, O_RDONLY);
+		int data_fd = open(DST_FILE, O_RDONLY);
 #endif
 		
 		if(data_fd == ERR){
@@ -407,16 +410,19 @@ void *connection_thread(void *arg){
 					break;
 				}
 			}
+			close(data_fd); /* Ensure read descriptor handles are cleanly closed */
 		}
 #ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
+		close(data_fd);
+#endif
+	} else {
+#ifndef USE_AESD_CHAR_DEVICE
+		close(data_fd);
 #endif
 	}
 
 	/*close client and prep for next connection*/
-	if(data_fd != ERR){
-		close(data_fd);
-	}
 	close(conn_fd);
 
 	/*disconnected, log status*/
