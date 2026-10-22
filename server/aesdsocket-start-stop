@@ -5,6 +5,8 @@ case "$1" in
     echo "Loading AESD_CHAR_DEVICE"
     /usr/bin/aesdchar_load
 
+    sleep 1
+
     echo "Starting aesdsocket daemon"
     start-stop-daemon -S -n aesdsocket -a /usr/bin/aesdsocket -- -d
     ;;
