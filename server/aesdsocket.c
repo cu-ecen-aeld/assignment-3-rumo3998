@@ -92,14 +92,15 @@ int main(int argc, char *argv[]){
 		break; /*no need to continue loop*/
 	}
 	
-	/*free the linked-list*/
-	freeaddrinfo(server_info);
-
 	/*check to see if the next ptr is a valid addrinfo struct*/
 	if(next == NULL){
 		ERROR_LOG("socket connection was unsuccessful");
+		freeaddrinfo(server_info);
 		return ERR; /*return -1 on fail*/
 	}
+
+	/*free the linked-list*/
+	freeaddrinfo(server_info);
 
 	/*now try to listen to the socket*/
 	rc = listen(listen_fd, BACKLOG);
@@ -154,6 +155,7 @@ int main(int argc, char *argv[]){
 			dup2(dev_null_fd, STDIN_FILENO);
 			dup2(dev_null_fd, STDOUT_FILENO);
 			dup2(dev_null_fd, STDERR_FILENO);
+			close(dev_null_fd); /*close original to prevent*/
 		}
 	}/*end daemon*/
 
@@ -201,7 +203,11 @@ int main(int argc, char *argv[]){
 			if(errno == EINTR || errno == EAGAIN){ 
 				/*stop loop, assume exit_code will stop future loops
 				 * start to clean threads*/
-				clean_list(&list_head);
+				if(exit_code){
+					free_list(&list_head);
+				}else{
+					clean_list(&list_head);
+				}
 				continue;
 			}
 			ERROR_LOG("Accept returned -1");
@@ -324,8 +330,27 @@ void *connection_thread(void *arg){
 	if(ret == NULL){
 		ERROR_LOG("NTOP returned -1");
 		close(conn_fd);
+		node->is_done = true;
+		return NULL;
 	}
 
+#ifndef USE_AESD_CHAR_DEVICE
+	/*write chunk of data, but first lock mutex*/
+	pthread_mutex_lock(&file_mutex);
+	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,0644);
+
+	/*done writing, unlock mutex*/
+	pthread_mutex_unlock(&file_mutex);
+#else
+	int data_fd = open(DST_FILE, O_RDWR);
+#endif
+
+	if(data_fd == ERR){
+		ERROR_LOG("Failed to open destination path");
+		close(conn_fd);
+		node->is_done = true;
+		return NULL;	
+	}
 
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
@@ -339,22 +364,16 @@ void *connection_thread(void *arg){
 			break;
 		}
 
-		/*write chunk of data, but first lock mutex*/
+
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_lock(&file_mutex);
-		/*open or create the data file for RW appending*/
-		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
-				0644);
-		if(data_fd == ERR){
-			ERROR_LOG("File returned -1");
-		}
-		else{
-			write(data_fd, data_buf, bytes_recvd);
-			close(data_fd);
-		}
+#endif
 
-		/*done writing, unlock mutex*/
+		write(data_fd, data_buf, bytes_recvd);
+
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
-
+#endif
 		/*look thru data_buf for new line*/
 		char *newline_found = memchr(data_buf, '\n', bytes_recvd);
 		if(newline_found != NULL){
@@ -365,10 +384,16 @@ void *connection_thread(void *arg){
 		
 	/*packet done, newline found, write back*/
 	if(packet_done && !exit_code){
+		
+		
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_lock(&file_mutex);
-
-		/*open or create the data file for RW appending*/
-		int data_fd = open(DST_FILE, O_RDONLY);
+		lseek(data_fd, 0, SEEK_SET);
+#else
+		close(data_fd);
+		data_fd = open(DST_FILE, O_RDONLY);
+#endif
+		
 		if(data_fd == ERR){
 			ERROR_LOG("File returned -1");
 		}
@@ -382,13 +407,18 @@ void *connection_thread(void *arg){
 					break;
 				}
 			}
-			close(data_fd);
 		}
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
+#endif
 	}
 
 	/*close client and prep for next connection*/
+	if(data_fd != ERR){
+		close(data_fd);
+	}
 	close(conn_fd);
+
 	/*disconnected, log status*/
 	DEBUG_LOG("Closed connection from %s", ip4);
 	node->is_done = true;

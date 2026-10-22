@@ -24,4 +24,4 @@ $(TARGET): aesdsocket.c aesdsocket.h
 
 clean:	
 	@echo "Running clean"
-	rm -f $(TARGET) *.o 
+	rm -f $(TARGET) *.o *.out
