@@ -4,7 +4,10 @@
  * Created on: September 26, 2026
  * Author: Ruben Reyes Moreno
  */
-
+/* Force safety definition override for Assignment 8 verification rules */
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
 /* ---Include libraries and headers---*/
 #include "aesdsocket.h"
 
