@@ -372,15 +372,17 @@ void *connection_thread(void *arg){
 		if(data_fd == ERR){
 			ERROR_LOG("File returned -1");
 		}
-
-		ssize_t bytes_read;
-		/*read file NUM_BYTES @ a time*/
-		while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
-			ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
-			if(bytes_sent == ERR){
-				ERROR_LOG("Conn sent returned -1");
-				break;
+		else{
+			ssize_t bytes_read;
+			/*read file NUM_BYTES @ a time*/
+			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+				if(bytes_sent == ERR){
+					ERROR_LOG("Conn sent returned -1");
+					break;
+				}
 			}
+			close(data_fd);
 		}
 		pthread_mutex_unlock(&file_mutex);
 	}
