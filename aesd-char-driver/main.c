@@ -43,7 +43,8 @@ struct aesd_dev aesd_device;
  * @return loff_t new byte offset from the beg. of the file on success, if
  *         failure then negative errno code.
  */
-loff_t aesd_llseek(struct file *filp, loff_t off, int whence){
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
 	
 	struct aesd_dev *dev = filp->private_data; /*Extracts the pointer to aesd struct*/ 
 	struct aesd_buffer_entry *entry;           /*current entry*/
@@ -122,7 +123,6 @@ int aesd_release(struct inode *inode, struct file *filp)
      */
     return 0;
 }
-
 
 /*
  * @brief Performs the device driver read operation.
@@ -298,11 +298,12 @@ out:
 struct file_operations aesd_fops = 
 {
     .owner =    THIS_MODULE,
-    .llseek =   aesd_llseek, /*Assignment 9 update to implement llseek*/
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
+    .llseek =         aesd_llseek, 
+    .read =           aesd_read,
+    .write =          aesd_write,
+    .open =           aesd_open,
+    .release =        aesd_release,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
