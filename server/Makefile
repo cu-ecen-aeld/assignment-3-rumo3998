@@ -10,7 +10,7 @@ CFLAGS ?= -Wall -Werror -I.
 LDFLAGS ?= -lpthread -lrt
 
 ifeq ($(USE_AESD_CHAR_DEVICE),1)
-       CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
+       CFLAGS += -DUSE_AESD_CHAR_DEVICE=1 -I../aesd-char-driver
 endif       
 
 #default and all targets for the server application

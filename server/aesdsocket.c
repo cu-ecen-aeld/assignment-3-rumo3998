@@ -351,6 +351,8 @@ void *connection_thread(void *arg){
 		return NULL;	
 	}
 
+	int is_seek_cmd = 0; /*declare and init seek command "bool"*/
+		
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
 		if(bytes_recvd == ERR){
@@ -363,8 +365,6 @@ void *connection_thread(void *arg){
 			break;
 		}
 
-		int is_seek_cmd = 0; /*declare and init seek command "bool"*/
-		
 #ifdef USE_AESD_CHAR_DEVICE
 		uint32_t cmd = 0;        /*Desired cmd*/
 		uint32_t cmd_offset = 0; /*Desired offset from cmd*/
@@ -416,6 +416,10 @@ void *connection_thread(void *arg){
 #ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_lock(&file_mutex);
 		lseek(data_fd, 0, SEEK_SET);
+#else
+		if(!is_seek_cmd){
+			lseek(data_fd, 0, SEEK_SET);
+		}
 #endif
 		
 		ssize_t bytes_read;
