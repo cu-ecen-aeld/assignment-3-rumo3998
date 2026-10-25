@@ -33,6 +33,49 @@ MODULE_LICENSE("Dual BSD/GPL");
 /*global aesd_device*/
 struct aesd_dev aesd_device;
 
+
+/*
+ * @brief Repositions the file offset of the open fd based on the arg offset.
+ *
+ * @param filp pointer to a file struct of open file instance.
+ * @param off the target offset value
+ * @param whence, determines how the offset will be used.
+ * @return loff_t new byte offset from the beg. of the file on success, if
+ *         failure then negative errno code.
+ */
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence){
+	
+	struct aesd_dev *dev = filp->private_data; /*Extracts the pointer to aesd struct*/ 
+	struct aesd_buffer_entry *entry;           /*current entry*/
+	loff_t retval;                             /*new byte offset,ret*/
+	loff_t size = 0;                           /*size of the file*/
+	uint8_t idx;                               /*variables for loop to iterate over
+						     each member of the cb*/
+	
+    	/*Print Debug for llseek function*/
+	PDEBUG("llseek: Offset:%lld whence:%d" ,off,whence);
+
+	/*Lock prior to accessing the dev structure*/
+    	if(mutex_lock_interruptible(&dev->lock)){
+		return -ERESTARTSYS;  /*return err code on fail*/
+	}
+
+	/**
+	 * Iterate over the CB to count entries and their size to compute the total files 
+	 * / circular buffer size. 
+	 */
+	AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->cb, idx){
+		size += entry->size;
+	}
+
+	/*use the fixed_size_llseek function*/
+	retval = fixed_size_llseek(filp, off, whence, size);
+	
+	/*unlock the mutex, retval will either be new pos or -EINVAL*/
+	mutex_unlock(&dev->lock);
+	return retval;
+}
+
 /*
  * @brief 1st file operation performed on a dev file. Init in prep for future ops
  *        opens the char dev and inits the file session. 
@@ -252,9 +295,10 @@ out:
 }
 
 /*aesd device driver, device methods*/
-struct file_operations aesd_fops = {
+struct file_operations aesd_fops = 
+{
     .owner =    THIS_MODULE,
-    .llseek =   aesd_llseek,
+    .llseek =   aesd_llseek, /*Assignment 9 update to implement llseek*/
     .read =     aesd_read,
     .write =    aesd_write,
     .open =     aesd_open,
@@ -305,7 +349,8 @@ int aesd_init_module(void)
 
 }
 
-void aesd_cleanup_module(void){
+void aesd_cleanup_module(void)
+{
     /*variables for loop to iterate over each member of the cb*/
     uint8_t idx;
     //struct aesd_circular_buffer buffer, this is found thru &aesd_device.cb
