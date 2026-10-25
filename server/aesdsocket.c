@@ -10,6 +10,8 @@
 #endif
 /* ---Include libraries and headers---*/
 #include "aesdsocket.h"
+#include <sys/ioctl.h>
+#include "aesd_ioctl.h"
 
 /* ---Defines---*/
 #define PORT      "9000" /*stream socket port*/
@@ -339,13 +341,15 @@ void *connection_thread(void *arg){
 	pthread_mutex_lock(&file_mutex);
 	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
 	pthread_mutex_unlock(&file_mutex);
+#else
+	int data_fd = open(DST_FILE, O_RDWR);
+#endif
 	if(data_fd == ERR){
 		ERROR_LOG("Failed to open destination path");
 		close(conn_fd);
 		node->is_done = true;
 		return NULL;	
 	}
-#endif
 
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
