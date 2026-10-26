@@ -4,7 +4,10 @@
  * Created on: September 26, 2026
  * Author: Ruben Reyes Moreno
  */
-
+/* Force safety definition override for Assignment 8 verification rules */
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
 /* ---Include libraries and headers---*/
 #include "aesdsocket.h"
 
@@ -13,9 +16,15 @@
 #define ERR       (-1)   /*return err code*/
 #define BACKLOG   (10)   /*num of allowable pending connections*/
 #define NUM_BYTES (1024) /*num of bytes to store data*/
-#define DST_FILE  "/var/tmp/aesdsocketdata"
 #define MS_TO_NS  (1000000)
 #define S_TO_MS   (1000)
+
+/* ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE
+#    define DST_FILE "/var/tmp/aesdsocketdata"
+#else
+#    define DST_FILE "/dev/aesdchar"
+#endif
 
 /* --globals--- */
 volatile sig_atomic_t exit_code = 0;     /*atomic var that ctrls execution*/  
@@ -83,14 +92,15 @@ int main(int argc, char *argv[]){
 		break; /*no need to continue loop*/
 	}
 	
-	/*free the linked-list*/
-	freeaddrinfo(server_info);
-
 	/*check to see if the next ptr is a valid addrinfo struct*/
 	if(next == NULL){
 		ERROR_LOG("socket connection was unsuccessful");
+		freeaddrinfo(server_info);
 		return ERR; /*return -1 on fail*/
 	}
+
+	/*free the linked-list*/
+	freeaddrinfo(server_info);
 
 	/*now try to listen to the socket*/
 	rc = listen(listen_fd, BACKLOG);
@@ -145,6 +155,7 @@ int main(int argc, char *argv[]){
 			dup2(dev_null_fd, STDIN_FILENO);
 			dup2(dev_null_fd, STDOUT_FILENO);
 			dup2(dev_null_fd, STDERR_FILENO);
+			close(dev_null_fd); /*close original to prevent*/
 		}
 	}/*end daemon*/
 
@@ -169,6 +180,8 @@ int main(int argc, char *argv[]){
 		return ERR; /*return -1 on fail*/
 	}
 
+/* ---build switch to disable timer thread--- */	
+#ifndef USE_AESD_CHAR_DEVICE
 	/*start time_stamp thread*/
 	pthread_t time_tid;     /*thread id for timestamp*/
 	rc = pthread_create(&time_tid, NULL, timestamp_thread, NULL);
@@ -177,6 +190,7 @@ int main(int argc, char *argv[]){
 		close(listen_fd); /*close fd to prevent leak*/
 		return ERR; /*return -1 on fail*/
 	}
+#endif
 
 	/*main accept loop, run while global is not set*/
 	while(!exit_code){
@@ -189,7 +203,11 @@ int main(int argc, char *argv[]){
 			if(errno == EINTR || errno == EAGAIN){ 
 				/*stop loop, assume exit_code will stop future loops
 				 * start to clean threads*/
-				clean_list(&list_head);
+				if(exit_code){
+					free_list(&list_head);
+				}else{
+					clean_list(&list_head);
+				}
 				continue;
 			}
 			ERROR_LOG("Accept returned -1");
@@ -241,21 +259,27 @@ int main(int argc, char *argv[]){
 
 	/*free the linked list*/
 	free_list(&list_head);
+
+/*  ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE	
 	pthread_cancel(time_tid);
 
 	/*join the time stamp thread*/
 	pthread_join(time_tid, NULL);
-
+#endif
 	/*close fd's and destroy mutex for fn access*/
 	close(listen_fd);
 	pthread_mutex_destroy(&file_mutex);
 
+/*  ---build switch--- */
+#ifndef USE_AESD_CHAR_DEVICE 
 	if(remove(DST_FILE) == ERR){
 		ERROR_LOG("File deletion returned -1");	
 	}
 	else{
 		DEBUG_LOG("tmp file deleted");	
 	}
+#endif
 
 	/*successful return*/
 	return 0;
@@ -306,8 +330,22 @@ void *connection_thread(void *arg){
 	if(ret == NULL){
 		ERROR_LOG("NTOP returned -1");
 		close(conn_fd);
+		node->is_done = true;
+		return NULL;
 	}
 
+#ifndef USE_AESD_CHAR_DEVICE
+	/* Regular file needs persistence for tracking positions */
+	pthread_mutex_lock(&file_mutex);
+	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
+	pthread_mutex_unlock(&file_mutex);
+	if(data_fd == ERR){
+		ERROR_LOG("Failed to open destination path");
+		close(conn_fd);
+		node->is_done = true;
+		return NULL;	
+	}
+#endif
 
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
@@ -321,21 +359,25 @@ void *connection_thread(void *arg){
 			break;
 		}
 
-		/*write chunk of data, but first lock mutex*/
-		pthread_mutex_lock(&file_mutex);
-		/*open or create the data file for RW appending*/
-		int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND,
-				0644);
+#ifdef USE_AESD_CHAR_DEVICE
+		/* LAZY OPEN FOR CHAR DEVICE: Open for this single block write transaction only */
+		int data_fd = open(DST_FILE, O_WRONLY | O_APPEND);
 		if(data_fd == ERR){
-			ERROR_LOG("File returned -1");
+			ERROR_LOG("Failed to open char device for writing");
+			break;
 		}
-		else{
-			write(data_fd, data_buf, bytes_recvd);
-			close(data_fd);
-		}
+#else
+		pthread_mutex_lock(&file_mutex);
+#endif
 
-		/*done writing, unlock mutex*/
+		write(data_fd, data_buf, bytes_recvd);
+
+#ifdef USE_AESD_CHAR_DEVICE
+		/* IMMEDIATELY CLOSE: Free the handle so driver updates internal states cleanly */
+		close(data_fd);
+#else
 		pthread_mutex_unlock(&file_mutex);
+#endif
 
 		/*look thru data_buf for new line*/
 		char *newline_found = memchr(data_buf, '\n', bytes_recvd);
@@ -347,28 +389,42 @@ void *connection_thread(void *arg){
 		
 	/*packet done, newline found, write back*/
 	if(packet_done && !exit_code){
+		
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_lock(&file_mutex);
-
-		/*open or create the data file for RW appending*/
+		lseek(data_fd, 0, SEEK_SET);
+#else
 		int data_fd = open(DST_FILE, O_RDONLY);
+#endif
+		
 		if(data_fd == ERR){
 			ERROR_LOG("File returned -1");
 		}
-
-		ssize_t bytes_read;
-		/*read file NUM_BYTES @ a time*/
-		while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
-			ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
-			if(bytes_sent == ERR){
-				ERROR_LOG("Conn sent returned -1");
-				break;
+		else{
+			ssize_t bytes_read;
+			/*read file NUM_BYTES @ a time*/
+			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+				if(bytes_sent == ERR){
+					ERROR_LOG("Conn sent returned -1");
+					break;
+				}
 			}
+			close(data_fd); /* Ensure read descriptor handles are cleanly closed */
 		}
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
+		close(data_fd);
+#endif
+	} else {
+#ifndef USE_AESD_CHAR_DEVICE
+		close(data_fd);
+#endif
 	}
 
 	/*close client and prep for next connection*/
 	close(conn_fd);
+
 	/*disconnected, log status*/
 	DEBUG_LOG("Closed connection from %s", ip4);
 	node->is_done = true;

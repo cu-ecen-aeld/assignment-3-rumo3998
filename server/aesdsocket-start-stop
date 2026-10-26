@@ -2,12 +2,20 @@
 
 case "$1" in
   start)
+    echo "Loading AESD_CHAR_DEVICE"
+    /usr/bin/aesdchar_load
+
+    sleep 1
+
     echo "Starting aesdsocket daemon"
     start-stop-daemon -S -n aesdsocket -a /usr/bin/aesdsocket -- -d
     ;;
   stop)
     echo "Stopping aesdsocket"
     start-stop-daemon -K -n aesdsocket -s SIGTERM
+
+    echo "Unloading AESD_CHAR_DEVICE"
+    /usr/bin/aesdchar_unload
     ;;
   *)
     echo "Usage: $0 {start|stop}"

@@ -1,0 +1,46 @@
+#!/bin/sh
+module=aesdchar
+device=aesdchar
+mode="666"
+cd $(dirname $0)
+
+# Set -e ensures we catch real structural errors down the line
+set -e
+
+# Group assignment logic matching distribution frameworks
+if grep -q '^staff:' /etc/group; then
+    group="staff"
+elif grep -q '^wheel:' /etc/group; then
+    group="wheel"
+else
+    group="root"
+fi
+
+# FIX: Check if module is already present in the kernel before executing insmod
+if lsmod | grep -q "^${module}"; then
+    echo "Module ${module} is already loaded."
+else
+    if [ -e ${module}.ko ]; then
+        echo "Loading local built file ${module}.ko"
+        insmod ./${module}.ko $*
+    else
+        echo "Local file ${module}.ko not found, trying modprobe fallback"
+        modprobe ${module}
+    fi
+fi
+
+# Extract the dynamic major mapping assignment safely without escaping traps
+major=$(cat /proc/devices | grep -i "aesdchar" | awk '{print $1}')
+
+if [ -z "$major" ]; then
+    echo "Error: Dynamic major number allocation failed"
+    exit 1
+fi
+
+# Clean out old endpoints and build the device mapping node
+rm -f /dev/${device}
+mknod /dev/${device} c $major 0
+chgrp $group /dev/${device}
+chmod $mode  /dev/${device}
+
+echo "Successfully provisioned /dev/${device} with Major=$major"
