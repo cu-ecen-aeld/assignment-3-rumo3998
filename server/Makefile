@@ -6,11 +6,12 @@ USE_AESD_CHAR_DEVICE ?= 1
 #This is conditional and depends on if the user passes CROSS_COMPILE 
 #if CROSS_COMPILE is not used then the expression expands to gcc only
 CC ?= $(CROSS_COMPILE)gcc
-CFLAGS ?= -Wall -Werror -I.
+CFLAGS ?= -Wall -Werror -I. 
+override CFLAGS += -I../aesd-char-driver -I../../aesd-char-driver
 LDFLAGS ?= -lpthread -lrt
 
 ifeq ($(USE_AESD_CHAR_DEVICE),1)
-       CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
+       override CFLAGS += -DUSE_AESD_CHAR_DEVICE=1
 endif       
 
 #default and all targets for the server application

@@ -10,6 +10,8 @@
 #endif
 /* ---Include libraries and headers---*/
 #include "aesdsocket.h"
+#include <sys/ioctl.h>
+#include "aesd_ioctl.h"
 
 /* ---Defines---*/
 #define PORT      "9000" /*stream socket port*/
@@ -339,14 +341,18 @@ void *connection_thread(void *arg){
 	pthread_mutex_lock(&file_mutex);
 	int data_fd = open(DST_FILE, O_RDWR | O_CREAT | O_APPEND, 0644);
 	pthread_mutex_unlock(&file_mutex);
+#else
+	int data_fd = open(DST_FILE, O_RDWR);
+#endif
 	if(data_fd == ERR){
 		ERROR_LOG("Failed to open destination path");
 		close(conn_fd);
 		node->is_done = true;
 		return NULL;	
 	}
-#endif
 
+	int is_seek_cmd = 0; /*declare and init seek command "bool"*/
+		
 	do{
 		bytes_recvd = recv(conn_fd, data_buf, sizeof(data_buf), 0);
 		if(bytes_recvd == ERR){
@@ -360,22 +366,39 @@ void *connection_thread(void *arg){
 		}
 
 #ifdef USE_AESD_CHAR_DEVICE
-		/* LAZY OPEN FOR CHAR DEVICE: Open for this single block write transaction only */
-		int data_fd = open(DST_FILE, O_WRONLY | O_APPEND);
-		if(data_fd == ERR){
-			ERROR_LOG("Failed to open char device for writing");
-			break;
+		uint32_t cmd = 0;        /*Desired cmd*/
+		uint32_t cmd_offset = 0; /*Desired offset from cmd*/
+		const char *fmt = "AESDCHAR_IOCSEEKTO:%u,%u";
+
+		/*check the data_buf for the string: AESDCHAR_IOCSEEKTO:X,Y
+		 * where X and Y are unsigned decimal integer values
+		 * X is write cmd to seek into and Y is the offset within 
+		 * the write command.*/
+
+		if(sscanf(data_buf, fmt, &cmd, &cmd_offset) == 2){
+			DEBUG_LOG("IOCSEEKTO command found. Running with cmd:%u	cmd_offset:%u",
+				       	cmd, cmd_offset);
+			/*populate the struct aesd_seekto structure*/
+			struct aesd_seekto seekto;
+			seekto.write_cmd = cmd;
+			seekto.write_cmd_offset = cmd_offset;
+
+			/*let's try the ioctl call*/
+			if(ioctl(data_fd, AESDCHAR_IOCSEEKTO, &seekto) == ERR){
+				ERROR_LOG("IOCTL call failed");			
+			}
+			is_seek_cmd = 1; /*seek cmd ID'd and executed*/
 		}
+
 #else
 		pthread_mutex_lock(&file_mutex);
 #endif
+		/*only do write if the seek command was not found/given*/
+		if(!is_seek_cmd){
+			write(data_fd, data_buf, bytes_recvd);
+		}
 
-		write(data_fd, data_buf, bytes_recvd);
-
-#ifdef USE_AESD_CHAR_DEVICE
-		/* IMMEDIATELY CLOSE: Free the handle so driver updates internal states cleanly */
-		close(data_fd);
-#else
+#ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
 #endif
 
@@ -394,36 +417,30 @@ void *connection_thread(void *arg){
 		pthread_mutex_lock(&file_mutex);
 		lseek(data_fd, 0, SEEK_SET);
 #else
-		int data_fd = open(DST_FILE, O_RDONLY);
+		if(!is_seek_cmd){
+			lseek(data_fd, 0, SEEK_SET);
+		}
 #endif
 		
-		if(data_fd == ERR){
-			ERROR_LOG("File returned -1");
-		}
-		else{
-			ssize_t bytes_read;
-			/*read file NUM_BYTES @ a time*/
-			while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
-				ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
-				if(bytes_sent == ERR){
-					ERROR_LOG("Conn sent returned -1");
-					break;
-				}
+		ssize_t bytes_read;
+		/*read file NUM_BYTES @ a time*/
+		while((bytes_read = read(data_fd, data_buf, sizeof(data_buf))) > 0){
+			ssize_t bytes_sent = send(conn_fd, data_buf, bytes_read, 0);
+			if(bytes_sent == ERR){
+				ERROR_LOG("Conn sent returned -1");
+				break;
 			}
-			close(data_fd); /* Ensure read descriptor handles are cleanly closed */
 		}
+
 #ifndef USE_AESD_CHAR_DEVICE
 		pthread_mutex_unlock(&file_mutex);
-		close(data_fd);
-#endif
-	} else {
-#ifndef USE_AESD_CHAR_DEVICE
-		close(data_fd);
 #endif
 	}
-
+	
 	/*close client and prep for next connection*/
+	close(data_fd);
 	close(conn_fd);
+
 
 	/*disconnected, log status*/
 	DEBUG_LOG("Closed connection from %s", ip4);

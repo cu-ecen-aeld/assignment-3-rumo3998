@@ -22,6 +22,7 @@
 #include <linux/slab.h>    /*kmalloc(), kfree()*/
 #include <linux/uaccess.h> /*copy to and from usr space*/
 #include <linux/string.h>  /*used for memcpy*/
+#include "aesd_ioctl.h"    /*ioctl*/
 
 /*Numerical ID to link files with specific device / driver*/
 int aesd_major =   0; // use dynamic major
@@ -32,6 +33,151 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 /*global aesd_device*/
 struct aesd_dev aesd_device;
+
+/*
+ * @brief   "hardware" control for the aesd_driver. 
+ *
+ * @param   filp pointer to a file struct of open file instance.
+ * @param   4 byte command passed from user space, constructed from 
+ *          macros like _IO(), _IOR() etc
+ * @param   Can be an int or a ptr to a user space memory location
+ * @return  0 on success, if failure then negative errno code.
+ * @details ioctl cmds have 4 bitfields, type(mag #), num(ordinal / seq #), 
+ *          dir(data xfer dire.), size(usr data involved) *          
+ */
+long aesd_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    	/*device structure that contains meta data*/
+	struct aesd_dev *dev = filp->private_data;
+	struct aesd_buffer_entry *entry;           /*current entry*/
+	struct aesd_seekto seekto;                 /*usr provided seekto struct*/
+	long retval = 0;                               /*new byte offset,ret*/
+	loff_t size = 0;                           /*size of the file*/
+	uint8_t idx = 0;                           /*variables for loop to iterate over
+						     each member of the cb*/
+	loff_t total_idx = 0;                      /*idx which will track absolute index
+						     not just the num of entries*/
+	
+	/*data / memory addr. validation*/
+	if(_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+	if(_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+
+	/*Write is a superset of the READ, this checks that the cmd
+	 * has both R and WR bit set, if so check that the user space memory
+	 * is not in kernel space*/
+	if(_IOC_DIR(cmd) & (_IOC_READ | _IOC_WRITE)){
+		if(!access_ok((void __user *)arg, _IOC_SIZE(cmd))){
+			return -EFAULT;
+		}
+	}
+
+    	/*Print Debug for ioctl function*/
+	PDEBUG("aesd_ioctl: cmd:%u addr:%p" ,cmd, (void *)arg);
+
+	/*after calling access_ok, the driver can now safely peform the xfer,
+	 * note the direction is from the apps pov, ex. IOC_READ means reading
+	 * from the dev so the driver must write to usr space*/
+	switch(cmd){
+		case AESDCHAR_IOCSEEKTO:
+
+			/*copy the aesd_seekto from usr space, contains cmd and cmd offset*/
+			if(copy_from_user(&seekto, (struct aesd_seekto __user *)arg,
+				       	sizeof(struct aesd_seekto))){
+				return -EFAULT;			
+			} 
+
+			/*able to get the struct from usr space now lock dev struct. Lock prior to 
+			 * accessing the dev structure*/
+    			if(mutex_lock_interruptible(&dev->lock)){
+				return -ERESTARTSYS;  /*return err code on fail*/
+			}
+			/**
+			 * Iterate over the CB to count entries and find the number of commands.  
+			 */
+			AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->cb, idx){
+				if(entry->buffptr){
+					size++;
+				}
+			}
+
+			/*check to see if the cmd we want to seek into is within the 
+			 *  bounds*/
+			if(seekto.write_cmd >= size){
+				mutex_unlock(&dev->lock);
+				return -EINVAL;
+			}
+			
+			/*use another idx to iterate through the circular buffer*/
+			idx = dev->cb.out_offs; /*out_offs is the read ptr*/
+			for(size_t i = 0; i < seekto.write_cmd; i++){
+				total_idx += dev->cb.entry[idx].size; /*add up the num of total bytes*/
+				idx = (idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; /*update read ptr*/
+			}
+
+			/*Now check cmd off to see if in bounds*/
+			if(seekto.write_cmd_offset >= dev->cb.entry[idx].size){
+				mutex_unlock(&dev->lock);
+				return -EINVAL;
+			}
+
+			/*final step, prev step added up all entry sizes up until write_cmd, 
+			 * but that left off the final offset from that last entry*/
+			total_idx += seekto.write_cmd_offset; 
+
+			/*update the filp->f_pos;*/
+			filp->f_pos = total_idx;
+
+			mutex_unlock(&dev->lock);
+			break;
+		default:
+		       	/*Inappropriate ioctl for dev,some code will set -EINVAL*/	
+			return -ENOTTY;
+	}
+	return retval;
+}
+
+/*
+ * @brief Repositions the file offset of the open fd based on the arg offset.
+ *
+ * @param filp pointer to a file struct of open file instance.
+ * @param off the target offset value
+ * @param whence, determines how the offset will be used.
+ * @return loff_t new byte offset from the beg. of the file on success, if
+ *         failure then negative errno code.
+ */
+loff_t aesd_llseek(struct file *filp, loff_t off, int whence)
+{
+	
+	struct aesd_dev *dev = filp->private_data; /*Extracts the pointer to aesd struct*/ 
+	struct aesd_buffer_entry *entry;           /*current entry*/
+	loff_t retval;                             /*new byte offset,ret*/
+	loff_t size = 0;                           /*size of the file*/
+	uint8_t idx;                               /*variables for loop to iterate over
+						     each member of the cb*/
+	
+    	/*Print Debug for llseek function*/
+	PDEBUG("llseek: Offset:%lld whence:%d" ,off,whence);
+
+	/*Lock prior to accessing the dev structure*/
+    	if(mutex_lock_interruptible(&dev->lock)){
+		return -ERESTARTSYS;  /*return err code on fail*/
+	}
+
+	/**
+	 * Iterate over the CB to count entries and their size to compute the total files 
+	 * / circular buffer size. 
+	 */
+	AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->cb, idx){
+		size += entry->size;
+	}
+
+	/*use the fixed_size_llseek function*/
+	retval = fixed_size_llseek(filp, off, whence, size);
+	
+	/*unlock the mutex, retval will either be new pos or -EINVAL*/
+	mutex_unlock(&dev->lock);
+	return retval;
+}
 
 /*
  * @brief 1st file operation performed on a dev file. Init in prep for future ops
@@ -79,7 +225,6 @@ int aesd_release(struct inode *inode, struct file *filp)
      */
     return 0;
 }
-
 
 /*
  * @brief Performs the device driver read operation.
@@ -252,12 +397,15 @@ out:
 }
 
 /*aesd device driver, device methods*/
-struct file_operations aesd_fops = {
+struct file_operations aesd_fops = 
+{
     .owner =    THIS_MODULE,
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
+    .llseek =         aesd_llseek, 
+    .read =           aesd_read,
+    .write =          aesd_write,
+    .open =           aesd_open,
+    .release =        aesd_release,
+    .unlocked_ioctl = aesd_ioctl,
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -304,7 +452,8 @@ int aesd_init_module(void)
 
 }
 
-void aesd_cleanup_module(void){
+void aesd_cleanup_module(void)
+{
     /*variables for loop to iterate over each member of the cb*/
     uint8_t idx;
     //struct aesd_circular_buffer buffer, this is found thru &aesd_device.cb
